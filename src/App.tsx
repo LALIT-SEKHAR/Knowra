@@ -3,6 +3,7 @@ import { AuthProvider } from './hooks/useAuth';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AuthPage } from './pages/AuthPage';
 import { FilesPage } from './pages/FilesPage';
+import { ProfilePage } from './pages/ProfilePage';
 import { SettingsPage } from './pages/SettingsPage';
 import { WorkspacePage } from './components/WorkspacePage';
 
@@ -15,6 +16,7 @@ export default function App() {
           <Route element={<ProtectedRoute />}>
             <Route path="/" element={<WorkspacePage />} />
             <Route path="/files" element={<FilesPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

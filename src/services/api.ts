@@ -68,6 +68,24 @@ export const api = {
 
   me: () => request<import('../types').User>('/auth/me'),
 
+  updateProfile: (data: { name: string }) =>
+    request<import('../types').User>('/auth/me', {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  uploadAvatar: (file: File) => {
+    const form = new FormData();
+    form.append('avatar', file);
+    return request<import('../types').User>('/auth/me/avatar', {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  deleteAvatar: () =>
+    request<import('../types').User>('/auth/me/avatar', { method: 'DELETE' }),
+
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 
   getSettings: () =>
@@ -115,7 +133,18 @@ export const api = {
       method: 'POST',
     }),
 
-  chat: (documentId: string, question: string, conversationId?: string) =>
+  chat: (question: string, conversationId?: string, documentId?: string) =>
+    request<{
+      answer: string;
+      sources: import('../types').SourceRef[];
+      conversationId: string;
+    }>('/conversations/chat', {
+      method: 'POST',
+      body: JSON.stringify({ question, conversationId, documentId }),
+    }),
+
+  /** @deprecated Prefer api.chat() for library-wide or optional scoped chat */
+  chatDocument: (documentId: string, question: string, conversationId?: string) =>
     request<{
       answer: string;
       sources: import('../types').SourceRef[];

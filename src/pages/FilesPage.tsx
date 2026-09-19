@@ -1,9 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
+import {
+  ArrowLeft,
+  CheckCircle2,
+  Download,
+  ExternalLink,
+  FileText,
+  LoaderCircle,
+  MessageSquare,
+  Pencil,
+  RefreshCw,
+  Search,
+  Trash2,
+  Upload,
+  XCircle,
+} from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import type { KnowraDocument } from '../types';
 import { formatBytes, formatRelativeDate } from '../utils/format';
 import { useAuth } from '../hooks/useAuth';
+import { UserAvatar, displayName } from '../components/UserAvatar';
 
 export function FilesPage() {
   const { user } = useAuth();
@@ -12,7 +28,6 @@ export function FilesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (q?: string) => {
@@ -54,18 +69,14 @@ export function FilesPage() {
       return;
     }
     setUploading(true);
-    setUploadProgress(30);
     setError('');
     try {
-      setUploadProgress(70);
       await api.uploadDocument(file);
-      setUploadProgress(100);
       await load(query || undefined);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Upload failed');
     } finally {
       setUploading(false);
-      setUploadProgress(0);
       if (fileRef.current) fileRef.current.value = '';
     }
   }
@@ -102,122 +113,225 @@ export function FilesPage() {
 
   const rows = useMemo(() => documents, [documents]);
 
-  return (
-    <div className="mx-auto max-w-5xl px-4 py-8">
-      <Link to="/" className="text-sm text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]">
-        ← Back to workspace
-      </Link>
-      <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="font-[family-name:var(--font-display)] text-3xl">Files</h1>
-          <p className="mt-1 text-[var(--color-ink-muted)]">Manage your PDF documents</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <form onSubmit={onSearch} className="flex gap-2">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search files"
-              className="border border-[var(--color-line)] bg-white px-3 py-2 outline-none focus:border-[var(--color-accent)]"
-            />
-            <button type="submit" className="border border-[var(--color-line)] px-3 py-2">
-              Search
-            </button>
-          </form>
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={uploading}
-            className="bg-[var(--color-accent)] px-4 py-2 text-white disabled:opacity-60"
-          >
-            {uploading ? `Uploading… ${uploadProgress}%` : '+ Upload'}
+  function statusLabel(doc: KnowraDocument) {
+    if (doc.status === 'ready') return 'Ready';
+    if (doc.status === 'processing') return 'Processing…';
+    if (doc.status === 'uploading') return 'Uploading…';
+    if (doc.status === 'failed') {
+      return `Failed${doc.errorMessage ? `: ${doc.errorMessage}` : ''}`;
+    }
+    return doc.status;
+  }
+
+  function StatusIcon({ doc }: { doc: KnowraDocument }) {
+    if (doc.status === 'ready') {
+      return <CheckCircle2 className="icon-sm text-[var(--color-accent)]" aria-hidden />;
+    }
+    if (doc.status === 'failed') {
+      return <XCircle className="icon-sm text-[var(--color-danger)]" aria-hidden />;
+    }
+    return <LoaderCircle className="icon-sm animate-spin text-[var(--color-ink-muted)]" aria-hidden />;
+  }
+
+  function DocActions({ doc }: { doc: KnowraDocument }) {
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        <Link className="chip" to={`/?doc=${doc.id}`}>
+          <ExternalLink className="icon-sm" aria-hidden />
+          Open
+        </Link>
+        <Link className="chip" to={`/?doc=${doc.id}&chat=1`}>
+          <MessageSquare className="icon-sm" aria-hidden />
+          Chat
+        </Link>
+        <a className="chip" href={doc.cloudinaryUrl} target="_blank" rel="noreferrer">
+          <Download className="icon-sm" aria-hidden />
+          Download
+        </a>
+        <button type="button" className="chip" onClick={() => void onRename(doc)}>
+          <Pencil className="icon-sm" aria-hidden />
+          Rename
+        </button>
+        {doc.status === 'failed' && (
+          <button type="button" className="chip" onClick={() => void onRetry(doc)}>
+            <RefreshCw className="icon-sm" aria-hidden />
+            Retry
           </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="application/pdf"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void onUpload(file);
-            }}
-          />
-        </div>
+        )}
+        <button type="button" className="chip btn-danger-text" onClick={() => void onDelete(doc)}>
+          <Trash2 className="icon-sm" aria-hidden />
+          Delete
+        </button>
       </div>
+    );
+  }
 
-      {error && <p className="mt-4 text-sm text-[var(--color-danger)]">{error}</p>}
+  return (
+    <div className="page-shell relative mx-auto max-w-5xl">
+      <div
+        className="ambient-orb left-[-10%] top-0 bg-white/10"
+        aria-hidden
+      />
 
-      <div className="mt-6 overflow-x-auto border border-[var(--color-line)] bg-[var(--color-panel)]">
-        <table className="w-full min-w-[640px] text-left text-sm">
-          <thead className="border-b border-[var(--color-line)] text-[var(--color-ink-muted)]">
-            <tr>
-              <th className="px-4 py-3 font-medium">Name</th>
-              <th className="px-4 py-3 font-medium">Type</th>
-              <th className="px-4 py-3 font-medium">Size</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 font-medium">Modified</th>
-              <th className="px-4 py-3 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+      <div className="relative z-10">
+        <Link to="/" className="btn btn-ghost !px-0 text-sm text-[var(--color-ink-muted)]">
+          <ArrowLeft className="icon" aria-hidden />
+          Back to workspace
+        </Link>
+
+        <div className="glass mt-4 p-5 sm:p-6">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h1 className="inline-flex items-center gap-2 font-[family-name:var(--font-display)] text-3xl tracking-tight">
+                <FileText className="size-7 text-[var(--color-ink-muted)]" aria-hidden />
+                Files
+              </h1>
+              <p className="mt-1 text-[var(--color-ink-muted)]">Manage your PDF documents</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                to="/profile"
+                className="inline-flex items-center gap-2 rounded-lg px-1.5 py-1 text-sm text-[var(--color-ink-muted)] transition-colors hover:bg-white/[0.04] hover:text-[var(--color-ink)]"
+                title="Edit profile"
+              >
+                <UserAvatar user={user} size="sm" />
+                <span className="hidden sm:inline">{displayName(user)}</span>
+              </Link>
+              <form onSubmit={onSearch} className="flex gap-2">
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute top-1/2 left-3 icon -translate-y-1/2 text-[var(--color-ink-muted)]"
+                    aria-hidden
+                  />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search files"
+                    className="field !min-h-11 !pl-10 w-44 sm:w-56"
+                  />
+                </div>
+                <button type="submit" className="btn btn-secondary">
+                  <Search className="icon" aria-hidden />
+                  Search
+                </button>
+              </form>
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                disabled={uploading}
+                className="btn btn-primary"
+              >
+                {uploading ? (
+                  <LoaderCircle className="icon animate-spin" aria-hidden />
+                ) : (
+                  <Upload className="icon" aria-hidden />
+                )}
+                {uploading ? 'Uploading…' : 'Upload'}
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="application/pdf"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void onUpload(file);
+                }}
+              />
+            </div>
+          </div>
+
+          {error && <p className="mt-4 text-sm text-[var(--color-danger)]">{error}</p>}
+        </div>
+
+        <div className="surface mt-4 overflow-hidden">
+          <ul className="divide-y divide-[var(--color-line)] md:hidden">
             {loading ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-[var(--color-ink-muted)]">
-                  Loading…
-                </td>
-              </tr>
+              <li className="flex items-center gap-2 px-4 py-8 text-sm text-[var(--color-ink-muted)]">
+                <LoaderCircle className="icon animate-spin" aria-hidden />
+                Loading…
+              </li>
             ) : rows.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-8 text-[var(--color-ink-muted)]">
-                  No files yet. Upload a PDF to get started.
-                </td>
-              </tr>
+              <li className="px-4 py-8 text-sm text-[var(--color-ink-muted)]">
+                No files yet. Upload a PDF to get started.
+              </li>
             ) : (
               rows.map((doc) => (
-                <tr key={doc.id} className="border-t border-[var(--color-line)]">
-                  <td className="px-4 py-3">{doc.name}</td>
-                  <td className="px-4 py-3">PDF</td>
-                  <td className="px-4 py-3">{formatBytes(doc.size)}</td>
-                  <td className="px-4 py-3 capitalize">
-                    {doc.status === 'ready' && 'Ready ✓'}
-                    {doc.status === 'processing' && 'Processing…'}
-                    {doc.status === 'uploading' && 'Uploading…'}
-                    {doc.status === 'failed' && (
-                      <span className="text-[var(--color-danger)]">
-                        Failed{doc.errorMessage ? `: ${doc.errorMessage}` : ''}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">{formatRelativeDate(doc.updatedAt)}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-2">
-                      <Link className="underline" to={`/?doc=${doc.id}`}>
-                        Open
-                      </Link>
-                      <Link className="underline" to={`/?doc=${doc.id}&chat=1`}>
-                        Chat
-                      </Link>
-                      <a className="underline" href={doc.cloudinaryUrl} target="_blank" rel="noreferrer">
-                        Download
-                      </a>
-                      <button type="button" className="underline" onClick={() => void onRename(doc)}>
-                        Rename
-                      </button>
-                      {doc.status === 'failed' && (
-                        <button type="button" className="underline" onClick={() => void onRetry(doc)}>
-                          Retry
-                        </button>
-                      )}
-                      <button type="button" className="underline text-[var(--color-danger)]" onClick={() => void onDelete(doc)}>
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                <li key={doc.id} className="px-4 py-4">
+                  <p className="flex items-center gap-2 font-medium">
+                    <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                    <span className="truncate">{doc.name}</span>
+                  </p>
+                  <p className="mt-1 flex items-center gap-1.5 text-xs text-[var(--color-ink-muted)]">
+                    <StatusIcon doc={doc} />
+                    {formatBytes(doc.size)} · {statusLabel(doc)} · {formatRelativeDate(doc.updatedAt)}
+                  </p>
+                  <div className="mt-3">
+                    <DocActions doc={doc} />
+                  </div>
+                </li>
               ))
             )}
-          </tbody>
-        </table>
+          </ul>
+
+          <div className="hidden overflow-x-auto md:block">
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead className="border-b border-[var(--color-line)] text-[var(--color-ink-muted)]">
+                <tr>
+                  <th className="px-4 py-3.5 font-medium">Name</th>
+                  <th className="px-4 py-3.5 font-medium">Type</th>
+                  <th className="px-4 py-3.5 font-medium">Size</th>
+                  <th className="px-4 py-3.5 font-medium">Status</th>
+                  <th className="px-4 py-3.5 font-medium">Modified</th>
+                  <th className="px-4 py-3.5 font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-[var(--color-ink-muted)]">
+                      <span className="inline-flex items-center gap-2">
+                        <LoaderCircle className="icon animate-spin" aria-hidden />
+                        Loading…
+                      </span>
+                    </td>
+                  </tr>
+                ) : rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-[var(--color-ink-muted)]">
+                      No files yet. Upload a PDF to get started.
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((doc) => (
+                    <tr key={doc.id} className="border-t border-[var(--color-line)]">
+                      <td className="px-4 py-3.5">
+                        <span className="inline-flex max-w-xs items-center gap-2 font-medium">
+                          <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                          <span className="truncate">{doc.name}</span>
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">PDF</td>
+                      <td className="px-4 py-3.5">{formatBytes(doc.size)}</td>
+                      <td
+                        className={`px-4 py-3.5 ${doc.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
+                      >
+                        <span className="inline-flex items-center gap-1.5 capitalize">
+                          <StatusIcon doc={doc} />
+                          {statusLabel(doc)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3.5">{formatRelativeDate(doc.updatedAt)}</td>
+                      <td className="px-4 py-3.5">
+                        <DocActions doc={doc} />
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   );

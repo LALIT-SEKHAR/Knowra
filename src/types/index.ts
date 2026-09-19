@@ -2,6 +2,7 @@ export type User = {
   id: string;
   email: string;
   name?: string | null;
+  avatarUrl?: string | null;
   hasOpenAIKey: boolean;
   openaiKeyLast4?: string | null;
 };
@@ -23,6 +24,7 @@ export type KnowraDocument = {
 
 export type SourceRef = {
   documentId: string;
+  documentName?: string;
   chunkId: string;
   pageNumber?: number;
 };

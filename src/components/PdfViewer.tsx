@@ -1,85 +1,237 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
+import { ChevronLeft, ChevronRight, FileText, LoaderCircle } from 'lucide-react';
 import { getToken } from '../services/api';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+const WORKER_SRC = '/pdf.worker.min.mjs';
 
+function ensurePdfWorker() {
+  if (pdfjs.GlobalWorkerOptions.workerSrc !== WORKER_SRC) {
+    pdfjs.GlobalWorkerOptions.workerSrc = WORKER_SRC;
+  }
+}
 
 type Props = {
   documentId: string;
   highlightPage?: number | null;
 };
 
+function measureStageWidth(stage: HTMLElement) {
+  const styles = getComputedStyle(stage);
+  const padX =
+    (Number.parseFloat(styles.paddingLeft) || 0) +
+    (Number.parseFloat(styles.paddingRight) || 0);
+  const available = stage.clientWidth - padX;
+  if (available > 40) return Math.floor(available);
+  return Math.min(640, Math.max(280, Math.floor(window.innerWidth * 0.42)));
+}
+
 export function PdfViewer({ documentId, highlightPage }: Props) {
+  ensurePdfWorker();
+
   const [numPages, setNumPages] = useState(0);
   const [pageNumber, setPageNumber] = useState(1);
   const [error, setError] = useState('');
+  const [pdfData, setPdfData] = useState<ArrayBuffer | null>(null);
+  const [loadingFile, setLoadingFile] = useState(true);
+  const [pageWidth, setPageWidth] = useState(() =>
+    typeof window !== 'undefined' ? Math.min(640, Math.floor(window.innerWidth * 0.42)) : 480,
+  );
+  const stageRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
-  const file = useMemo(() => {
-    const base = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
-    const token = getToken();
-    return {
-      url: `${base}/documents/${documentId}/file`,
-      httpHeaders: token ? { Authorization: `Bearer ${token}` } : {},
+  useLayoutEffect(() => {
+    ensurePdfWorker();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPdfData(null);
+    setNumPages(0);
+    setPageNumber(1);
+    setError('');
+    setLoadingFile(true);
+    pageRefs.current.clear();
+
+    async function loadFile() {
+      try {
+        ensurePdfWorker();
+        const base = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+        const token = getToken();
+        const res = await fetch(`${base}/documents/${documentId}/file`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to fetch PDF (${res.status})`);
+        }
+        const buffer = await res.arrayBuffer();
+        if (cancelled) return;
+        // Copy so pdf.js can transfer ownership without detaching our state reference issues
+        setPdfData(buffer.slice(0));
+      } catch (err) {
+        if (!cancelled) {
+          console.error(err);
+          setError(err instanceof Error ? err.message : 'Failed to load PDF preview');
+        }
+      } finally {
+        if (!cancelled) setLoadingFile(false);
+      }
+    }
+
+    void loadFile();
+    return () => {
+      cancelled = true;
     };
   }, [documentId]);
 
   useEffect(() => {
-    if (highlightPage && highlightPage >= 1) {
-      setPageNumber(highlightPage);
-    }
-  }, [highlightPage]);
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    const updateWidth = () => {
+      const next = measureStageWidth(stage);
+      setPageWidth((prev) => (Math.abs(prev - next) > 2 ? next : prev));
+    };
+
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(stage);
+    window.addEventListener('resize', updateWidth);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateWidth);
+    };
+  }, [documentId, pdfData]);
 
   useEffect(() => {
-    setPageNumber(1);
-    setNumPages(0);
-    setError('');
-  }, [documentId]);
+    if (!highlightPage || highlightPage < 1) return;
+    const target = numPages ? Math.min(highlightPage, numPages) : highlightPage;
+    setPageNumber(target);
+    requestAnimationFrame(() => {
+      pageRefs.current.get(target)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }, [highlightPage, numPages]);
+
+  const setPageRef = useCallback((page: number, node: HTMLDivElement | null) => {
+    if (node) pageRefs.current.set(page, node);
+    else pageRefs.current.delete(page);
+  }, []);
+
+  useEffect(() => {
+    if (!numPages || !stageRef.current) return;
+    const stage = stageRef.current;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const best = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!best) return;
+        const page = Number((best.target as HTMLElement).dataset.page);
+        if (page) setPageNumber(page);
+      },
+      { root: stage, threshold: [0.2, 0.4, 0.6] },
+    );
+    pageRefs.current.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [numPages, pageWidth]);
+
+  function goToPage(next: number) {
+    const clamped = Math.min(Math.max(1, next), Math.max(numPages, 1));
+    setPageNumber(clamped);
+    pageRefs.current.get(clamped)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-2 text-sm">
-        <span>Document viewer</span>
+    <div className="flex h-full min-h-0 w-full flex-col">
+      <div className="chrome-bar flex shrink-0 items-center justify-between gap-2 border-b border-[var(--color-line)] px-3 py-2.5 text-sm">
+        <span className="inline-flex items-center gap-1.5 font-medium text-[var(--color-ink-muted)]">
+          <FileText className="icon" aria-hidden />
+          Document
+        </span>
         {numPages > 0 && (
           <div className="flex items-center gap-2">
             <button
               type="button"
-              className="border border-[var(--color-line)] px-2 py-1 disabled:opacity-40"
+              className="btn btn-secondary !min-h-9 !px-2.5 text-xs"
               disabled={pageNumber <= 1}
-              onClick={() => setPageNumber((p) => Math.max(1, p - 1))}
+              aria-label="Previous page"
+              onClick={() => goToPage(pageNumber - 1)}
             >
-              Prev
+              <ChevronLeft className="icon" aria-hidden />
             </button>
-            <span>
-              Page {pageNumber} / {numPages}
+            <span className="min-w-[4.5rem] text-center tabular-nums text-[var(--color-ink-muted)]">
+              {pageNumber} / {numPages}
             </span>
             <button
               type="button"
-              className="border border-[var(--color-line)] px-2 py-1 disabled:opacity-40"
+              className="btn btn-secondary !min-h-9 !px-2.5 text-xs"
               disabled={pageNumber >= numPages}
-              onClick={() => setPageNumber((p) => Math.min(numPages, p + 1))}
+              aria-label="Next page"
+              onClick={() => goToPage(pageNumber + 1)}
             >
-              Next
+              <ChevronRight className="icon" aria-hidden />
             </button>
           </div>
         )}
       </div>
-      <div className="flex-1 overflow-auto bg-[#e8e4da] p-4">
+
+      <div ref={stageRef} className="pdf-stage min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4">
         {error ? (
           <p className="text-sm text-[var(--color-danger)]">{error}</p>
+        ) : loadingFile || !pdfData ? (
+          <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
+            <LoaderCircle className="icon animate-spin" aria-hidden />
+            Loading PDF…
+          </p>
         ) : (
           <Document
-            file={file}
-            onLoadSuccess={({ numPages: n }) => setNumPages(n)}
-            onLoadError={() => setError('Failed to load PDF preview')}
-            loading={<p className="text-sm text-[var(--color-ink-muted)]">Loading PDF…</p>}
+            key={documentId}
+            file={{ data: pdfData }}
+            onLoadSuccess={({ numPages: n }) => {
+              setNumPages(n);
+              setPageNumber((p) => Math.min(Math.max(1, p), n));
+            }}
+            onLoadError={(err) => {
+              console.error(err);
+              setError('Failed to parse PDF preview');
+            }}
+            loading={
+              <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
+                <LoaderCircle className="icon animate-spin" aria-hidden />
+                Rendering PDF…
+              </p>
+            }
+            className="pdf-document mx-auto flex w-full flex-col items-center gap-3"
           >
-            <Page
-              pageNumber={pageNumber}
-              width={typeof window !== 'undefined' ? Math.min(640, window.innerWidth - 48) : 640}
-            />
+            {Array.from({ length: numPages }, (_, i) => {
+              const page = i + 1;
+              return (
+                <div
+                  key={`${documentId}-${page}`}
+                  ref={(node) => setPageRef(page, node)}
+                  data-page={page}
+                  className="pdf-page-frame overflow-hidden rounded-[var(--radius-control)] bg-white shadow-[0_16px_40px_-24px_rgba(0,0,0,0.8)] ring-1 ring-white/10"
+                  style={{ width: pageWidth }}
+                >
+                  <Page
+                    pageNumber={page}
+                    width={pageWidth}
+                    renderTextLayer={false}
+                    renderAnnotationLayer={false}
+                    loading={
+                      <div
+                        className="flex items-center justify-center bg-neutral-100 text-neutral-500"
+                        style={{ width: pageWidth, height: Math.round(pageWidth * 1.3) }}
+                      >
+                        <LoaderCircle className="icon animate-spin" aria-hidden />
+                      </div>
+                    }
+                  />
+                </div>
+              );
+            })}
           </Document>
         )}
       </div>

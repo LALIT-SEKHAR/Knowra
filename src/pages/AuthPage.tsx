@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Navigate } from 'react-router-dom';
+import { ArrowLeft, Check, LoaderCircle, Mail, ShieldCheck } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 
@@ -44,15 +45,25 @@ export function AuthPage() {
   }
 
   return (
-    <div className="min-h-full flex items-center justify-center px-4 py-12">
-      <div className="w-full max-w-md">
+    <div className="page-shell relative flex min-h-full items-center justify-center">
+      <div
+        className="ambient-orb left-[5%] top-[8%] bg-white/12"
+        aria-hidden
+      />
+      <div
+        className="ambient-orb bottom-[5%] right-[8%] bg-white/6"
+        style={{ animationDelay: '-4s' }}
+        aria-hidden
+      />
+
+      <div className="relative z-10 w-full max-w-md">
         <p className="font-[family-name:var(--font-display)] text-4xl tracking-tight text-[var(--color-ink)]">
           Knowra
         </p>
         <p className="mt-2 text-[var(--color-ink-muted)]">Ask. Explore. Understand.</p>
 
-        <div className="mt-10 border border-[var(--color-line)] bg-[var(--color-panel)]/80 p-6 backdrop-blur">
-          <h1 className="text-xl font-semibold">Sign in</h1>
+        <div className="glass mt-10 p-6 sm:p-7">
+          <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
           <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
             Passwordless email OTP — no password needed.
           </p>
@@ -61,59 +72,74 @@ export function AuthPage() {
             <form className="mt-6 space-y-4" onSubmit={onRequestOtp}>
               <label className="block text-sm font-medium">
                 Email
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="mt-1 w-full border border-[var(--color-line)] bg-white px-3 py-2 outline-none focus:border-[var(--color-accent)]"
-                  placeholder="you@example.com"
-                />
+                <div className="relative mt-1.5">
+                  <Mail
+                    className="pointer-events-none absolute top-1/2 left-3 icon -translate-y-1/2 text-[var(--color-ink-muted)]"
+                    aria-hidden
+                  />
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="field !pl-10"
+                    placeholder="you@example.com"
+                  />
+                </div>
               </label>
               {error && <p className="text-sm text-[var(--color-danger)]">{error}</p>}
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full bg-[var(--color-accent)] px-4 py-2.5 text-white disabled:opacity-60"
-              >
+              <button type="submit" disabled={busy} className="btn btn-primary w-full">
+                {busy ? (
+                  <LoaderCircle className="icon animate-spin" aria-hidden />
+                ) : (
+                  <Mail className="icon" aria-hidden />
+                )}
                 {busy ? 'Sending…' : 'Send code'}
               </button>
             </form>
           ) : (
             <form className="mt-6 space-y-4" onSubmit={onVerify}>
               <p className="text-sm text-[var(--color-ink-muted)]">
-                Enter the code sent to <strong>{email}</strong>
+                Enter the code sent to <strong className="text-[var(--color-ink)]">{email}</strong>
               </p>
               <label className="block text-sm font-medium">
                 Verification code
-                <input
-                  type="text"
-                  required
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\s+/g, ''))}
-                  className="mt-1 w-full border border-[var(--color-line)] bg-white px-3 py-2 tracking-widest outline-none focus:border-[var(--color-accent)]"
-                  placeholder="123456"
-                />
+                <div className="relative mt-1.5">
+                  <ShieldCheck
+                    className="pointer-events-none absolute top-1/2 left-3 icon -translate-y-1/2 text-[var(--color-ink-muted)]"
+                    aria-hidden
+                  />
+                  <input
+                    type="text"
+                    required
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\s+/g, ''))}
+                    className="field !pl-10 tracking-[0.35em]"
+                    placeholder="123456"
+                  />
+                </div>
               </label>
               {error && <p className="text-sm text-[var(--color-danger)]">{error}</p>}
-              <button
-                type="submit"
-                disabled={busy}
-                className="w-full bg-[var(--color-accent)] px-4 py-2.5 text-white disabled:opacity-60"
-              >
+              <button type="submit" disabled={busy} className="btn btn-primary w-full">
+                {busy ? (
+                  <LoaderCircle className="icon animate-spin" aria-hidden />
+                ) : (
+                  <Check className="icon" aria-hidden />
+                )}
                 {busy ? 'Verifying…' : 'Verify & continue'}
               </button>
               <button
                 type="button"
-                className="w-full text-sm text-[var(--color-ink-muted)] underline"
+                className="btn btn-ghost w-full text-sm"
                 onClick={() => {
                   setStep('email');
                   setCode('');
                   setError('');
                 }}
               >
+                <ArrowLeft className="icon" aria-hidden />
                 Use a different email
               </button>
             </form>

@@ -279,6 +279,20 @@ body {
   font-weight: 550;
 }
 
+.nav-item.btn-danger-text,
+.nav-item.btn-danger-text .icon-sm {
+  color: var(--color-danger);
+}
+
+.nav-item.btn-danger-text:hover {
+  background: color-mix(in oklab, var(--color-danger) 14%, transparent);
+  color: #fecaca;
+}
+
+.nav-item.btn-danger-text:hover .icon-sm {
+  color: #fecaca;
+}
+
 .segmented {
   display: inline-flex;
   padding: 3px;

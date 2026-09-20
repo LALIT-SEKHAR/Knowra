@@ -193,6 +193,12 @@ export function FilesPage() {
       }
 
       const rect = buttonRef.current.getBoundingClientRect();
+      // Mobile + desktop rows both mount; skip the hidden trigger (rect is 0×0).
+      if (rect.width < 1 || rect.height < 1) {
+        setMenuPos(null);
+        return;
+      }
+
       const menuWidth = 168;
       const gap = 6;
       const left = Math.min(
@@ -283,7 +289,7 @@ export function FilesPage() {
           className="chip chip-icon"
           aria-label={`Actions for ${doc.name}`}
           aria-haspopup="menu"
-          aria-expanded={open}
+          aria-expanded={open && Boolean(menuPos)}
           onClick={() => setOpenMenuId(open ? null : doc.id)}
         >
           <MoreVertical className="icon-sm" aria-hidden />

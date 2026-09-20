@@ -6,12 +6,13 @@ import {
   KeyRound,
   LoaderCircle,
   Save,
-  Settings,
   Trash2,
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { UserAvatar, displayName } from '../components/UserAvatar';
+import { BrandMark } from '../components/BrandMark';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 export function SettingsPage() {
   const { user, refreshUser } = useAuth();
@@ -19,6 +20,7 @@ export function SettingsPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
@@ -44,6 +46,7 @@ export function SettingsPage() {
     try {
       await api.deleteOpenAIKey();
       setMessage('API key removed.');
+      setRemoveConfirmOpen(false);
       await refreshUser();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to remove key');
@@ -70,9 +73,7 @@ export function SettingsPage() {
 
         <header className="mt-5">
           <h1 className="flex items-center gap-3 font-[family-name:var(--font-display)] text-3xl leading-none tracking-tight">
-            <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-[14px] border border-[var(--color-line)] bg-white/[0.06]">
-              <Settings className="size-6 text-[var(--color-ink)]" strokeWidth={1.6} aria-hidden />
-            </span>
+            <BrandMark size="sm" showWordmark={false} />
             Settings
           </h1>
           <div className="mt-2.5 flex items-center gap-2.5" style={{ paddingLeft: 52 }}>
@@ -189,7 +190,12 @@ export function SettingsPage() {
                 {busy ? 'Saving…' : 'Save key'}
               </button>
               {user?.hasOpenAIKey && (
-                <button type="button" disabled={busy} onClick={onRemove} className="btn btn-secondary">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setRemoveConfirmOpen(true)}
+                  className="btn btn-secondary btn-danger-text"
+                >
                   <Trash2 className="icon-sm" aria-hidden />
                   Remove key
                 </button>
@@ -201,6 +207,21 @@ export function SettingsPage() {
           {error && <p className="mt-3 text-sm text-[var(--color-danger)]">{error}</p>}
         </section>
       </div>
+
+      <ConfirmDialog
+        open={removeConfirmOpen}
+        title="Remove API key?"
+        description="Knowra won’t be able to process PDFs or answer questions until you add a key again."
+        confirmLabel="Remove key"
+        danger
+        busy={busy}
+        onCancel={() => {
+          if (!busy) setRemoveConfirmOpen(false);
+        }}
+        onConfirm={() => {
+          void onRemove();
+        }}
+      />
     </div>
   );
 }

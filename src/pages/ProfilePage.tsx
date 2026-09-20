@@ -6,10 +6,11 @@ import {
   LoaderCircle,
   Save,
   Trash2,
-  UserRound,
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
+import { BrandMark } from '../components/BrandMark';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 function initialsFrom(name: string | null | undefined, email: string | undefined): string {
   const trimmed = name?.trim();
@@ -32,6 +33,7 @@ export function ProfilePage() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [removingAvatar, setRemovingAvatar] = useState(false);
+  const [removeAvatarConfirmOpen, setRemoveAvatarConfirmOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -99,6 +101,7 @@ export function ProfilePage() {
         await refreshUser();
       }
       setMessage('Profile photo removed.');
+      setRemoveAvatarConfirmOpen(false);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to remove photo');
     } finally {
@@ -125,9 +128,7 @@ export function ProfilePage() {
 
         <header className="mt-5">
           <h1 className="flex items-center gap-3 font-[family-name:var(--font-display)] text-3xl leading-none tracking-tight">
-            <span className="inline-flex size-10 shrink-0 items-center justify-center rounded-[14px] border border-[var(--color-line)] bg-white/[0.06]">
-              <UserRound className="size-6 text-[var(--color-ink)]" strokeWidth={1.6} aria-hidden />
-            </span>
+            <BrandMark size="sm" showWordmark={false} />
             Profile
           </h1>
           <p className="mt-2.5 text-sm text-[var(--color-ink-muted)]" style={{ paddingLeft: 52 }}>
@@ -180,9 +181,9 @@ export function ProfilePage() {
                   {(displayAvatar || selectedFile) && (
                     <button
                       type="button"
-                      className="btn btn-ghost"
+                      className="btn btn-ghost btn-danger-text"
                       disabled={removingAvatar || busy}
-                      onClick={() => void onRemoveAvatar()}
+                      onClick={() => setRemoveAvatarConfirmOpen(true)}
                     >
                       {removingAvatar ? (
                         <LoaderCircle className="icon-sm animate-spin" aria-hidden />
@@ -249,6 +250,21 @@ export function ProfilePage() {
           {error && <p className="mt-3 text-sm text-[var(--color-danger)]">{error}</p>}
         </section>
       </div>
+
+      <ConfirmDialog
+        open={removeAvatarConfirmOpen}
+        title="Remove photo?"
+        description="Your profile will show initials instead of a photo until you upload a new one."
+        confirmLabel="Remove photo"
+        danger
+        busy={removingAvatar}
+        onCancel={() => {
+          if (!removingAvatar) setRemoveAvatarConfirmOpen(false);
+        }}
+        onConfirm={() => {
+          void onRemoveAvatar();
+        }}
+      />
     </div>
   );
 }

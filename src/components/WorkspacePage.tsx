@@ -5,6 +5,7 @@ import {
   ArrowRight,
   FileText,
   Files,
+  Info,
   LoaderCircle,
   LogOut,
   Menu,
@@ -18,7 +19,9 @@ import {
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import type { ChatMessage, Conversation, KnowraDocument, SourceRef } from '../types';
-import { groupByRecency } from '../utils/format';
+import { formatMessageTime, groupByRecency } from '../utils/format';
+import { BrandMark } from './BrandMark';
+import { ConfirmDialog } from './ConfirmDialog';
 import { PdfViewer } from './PdfViewer';
 import { UserAvatar, displayName } from './UserAvatar';
 
@@ -38,6 +41,8 @@ export function WorkspacePage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [highlightPage, setHighlightPage] = useState<number | null>(null);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [logoutBusy, setLogoutBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatLoadIdRef = useRef(0);
@@ -215,8 +220,7 @@ export function WorkspacePage() {
   const sidebar = (
     <aside className="glass flex h-full w-[17.5rem] shrink-0 flex-col overflow-hidden">
       <div className="border-b border-[var(--color-line)] px-4 py-4">
-        <p className="font-[family-name:var(--font-display)] text-2xl tracking-tight">Knowra</p>
-        <p className="text-xs text-[var(--color-ink-muted)]">Ask. Explore. Understand.</p>
+        <BrandMark size="md" tagline />
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-3">
@@ -322,10 +326,10 @@ export function WorkspacePage() {
           </Link>
           <button
             type="button"
-            className="nav-item"
-            onClick={() => void logout().then(() => navigate('/auth'))}
+            className="nav-item btn-danger-text"
+            onClick={() => setLogoutConfirmOpen(true)}
           >
-            <LogOut className="icon-sm text-[var(--color-ink-muted)]" aria-hidden />
+            <LogOut className="icon-sm" aria-hidden />
             Log out
           </button>
         </div>
@@ -375,38 +379,63 @@ export function WorkspacePage() {
             Ask anything about your uploaded PDFs. Knowra searches across your whole library.
           </p>
         )}
-        {messages.map((m) => (
-          <div key={m.id} className={clsx(m.role === 'user' ? 'text-right' : 'text-left')}>
-            <div
-              className={clsx(
-                'inline-block max-w-[90%] whitespace-pre-wrap px-3.5 py-2.5 text-sm',
-                m.role === 'user' ? 'bubble-user' : 'bubble-ai',
-              )}
-            >
-              <p className="mb-1 text-[11px] opacity-70">{m.role === 'user' ? 'You' : 'Knowra'}</p>
-              {m.content}
-            </div>
-            {m.sources && m.sources.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {m.sources.map((s) => (
-                  <button
-                    key={`${s.chunkId}-${s.pageNumber ?? 'x'}`}
-                    type="button"
-                    onClick={() => onSourceClick(s)}
-                    className="chip"
-                    title={s.documentName || 'Open source'}
-                  >
-                    <FileText className="icon-sm" aria-hidden />
-                    <span className="max-w-[10rem] truncate">
-                      {s.documentName || 'Document'}
-                      {s.pageNumber ? ` · p.${s.pageNumber}` : ''}
-                    </span>
-                  </button>
-                ))}
+        {messages.map((m) => {
+          const timeLabel = formatMessageTime(m.createdAt);
+          return (
+            <div key={m.id} className={clsx(m.role === 'user' ? 'text-right' : 'text-left')}>
+              <div
+                className={clsx(
+                  'inline-block max-w-[90%] whitespace-pre-wrap px-3.5 py-2.5 text-sm',
+                  m.role === 'user' ? 'bubble-user' : 'bubble-ai',
+                )}
+              >
+                <div className="mb-1 flex items-center justify-between gap-3 text-[11px] opacity-70">
+                  <span className="inline-flex items-center gap-1.5">
+                    {m.role === 'assistant' ? (
+                      <img
+                        src="/logo.png"
+                        alt=""
+                        className="size-3.5 rounded-[4px]"
+                        aria-hidden
+                      />
+                    ) : null}
+                    {m.role === 'user' ? 'You' : 'Knowra'}
+                  </span>
+                  {timeLabel ? (
+                    <time dateTime={m.createdAt} className="shrink-0 tabular-nums">
+                      {timeLabel}
+                    </time>
+                  ) : null}
+                </div>
+                {m.content}
               </div>
-            )}
-          </div>
-        ))}
+              {m.sources && m.sources.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {m.sources.map((s) => {
+                    const detail = [
+                      s.documentName || 'Document',
+                      s.pageNumber ? `page ${s.pageNumber}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ');
+                    return (
+                      <button
+                        key={`${s.chunkId}-${s.pageNumber ?? 'x'}`}
+                        type="button"
+                        onClick={() => onSourceClick(s)}
+                        className="chip chip-icon"
+                        title={detail}
+                        aria-label={`Open source: ${detail}`}
+                      >
+                        <Info className="icon-sm" aria-hidden />
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
         {busy && (
           <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
             <LoaderCircle className="icon animate-spin" aria-hidden />
@@ -464,7 +493,7 @@ export function WorkspacePage() {
           <Menu className="icon" aria-hidden />
           Menu
         </button>
-        <p className="font-[family-name:var(--font-display)] text-lg tracking-tight">Knowra</p>
+        <BrandMark size="sm" showWordmark className="!gap-2" />
         {selectedDoc ? (
           <div className="segmented" role="tablist" aria-label="Workspace panel">
             <button
@@ -533,6 +562,27 @@ export function WorkspacePage() {
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={logoutConfirmOpen}
+        title="Log out?"
+        description="You’ll need to sign in again with an email code to continue using Knowra."
+        confirmLabel="Log out"
+        danger
+        busy={logoutBusy}
+        onCancel={() => {
+          if (!logoutBusy) setLogoutConfirmOpen(false);
+        }}
+        onConfirm={() => {
+          setLogoutBusy(true);
+          void logout()
+            .then(() => {
+              setLogoutConfirmOpen(false);
+              navigate('/auth');
+            })
+            .finally(() => setLogoutBusy(false));
+        }}
+      />
     </div>
   );
 }

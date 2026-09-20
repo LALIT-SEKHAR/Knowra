@@ -8,6 +8,7 @@ import {
   FileText,
   LoaderCircle,
   MessageSquare,
+  MoreVertical,
   Pencil,
   RefreshCw,
   Search,
@@ -20,6 +21,8 @@ import type { KnowraDocument } from '../types';
 import { formatBytes, formatRelativeDate } from '../utils/format';
 import { useAuth } from '../hooks/useAuth';
 import { UserAvatar, displayName } from '../components/UserAvatar';
+import { BrandMark } from '../components/BrandMark';
+import { ConfirmDialog } from '../components/ConfirmDialog';
 
 export function FilesPage() {
   const { user } = useAuth();
@@ -28,6 +31,9 @@ export function FilesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<KnowraDocument | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (q?: string) => {
@@ -57,6 +63,27 @@ export function FilesPage() {
     return () => clearInterval(id);
   }, [documents, load, query]);
 
+  useEffect(() => {
+    if (!openMenuId) return;
+
+    function onPointerDown(e: MouseEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest(`[data-file-menu="${openMenuId}"]`)) return;
+      setOpenMenuId(null);
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpenMenuId(null);
+    }
+
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [openMenuId]);
+
   async function onSearch(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
@@ -82,6 +109,7 @@ export function FilesPage() {
   }
 
   async function onRename(doc: KnowraDocument) {
+    setOpenMenuId(null);
     const name = window.prompt('Rename file', doc.name);
     if (!name || name === doc.name) return;
     try {
@@ -92,17 +120,28 @@ export function FilesPage() {
     }
   }
 
-  async function onDelete(doc: KnowraDocument) {
-    if (!window.confirm(`Delete ${doc.name}? This cannot be undone.`)) return;
+  function requestDelete(doc: KnowraDocument) {
+    setOpenMenuId(null);
+    setDeleteTarget(doc);
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleteBusy(true);
+    setError('');
     try {
-      await api.deleteDocument(doc.id);
+      await api.deleteDocument(deleteTarget.id);
+      setDeleteTarget(null);
       await load(query || undefined);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Delete failed');
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
   async function onRetry(doc: KnowraDocument) {
+    setOpenMenuId(null);
     try {
       await api.retryDocument(doc.id);
       await load(query || undefined);
@@ -134,44 +173,90 @@ export function FilesPage() {
   }
 
   function DocActions({ doc }: { doc: KnowraDocument }) {
+    const open = openMenuId === doc.id;
+
     return (
-      <div className="flex flex-wrap gap-1.5">
-        <Link className="chip" to={`/?doc=${doc.id}`}>
-          <ExternalLink className="icon-sm" aria-hidden />
-          Open
-        </Link>
-        <Link className="chip" to={`/?doc=${doc.id}&chat=1`}>
-          <MessageSquare className="icon-sm" aria-hidden />
-          Chat
-        </Link>
-        <a className="chip" href={doc.cloudinaryUrl} target="_blank" rel="noreferrer">
-          <Download className="icon-sm" aria-hidden />
-          Download
-        </a>
-        <button type="button" className="chip" onClick={() => void onRename(doc)}>
-          <Pencil className="icon-sm" aria-hidden />
-          Rename
+      <div className="relative inline-flex" data-file-menu={doc.id}>
+        <button
+          type="button"
+          className="chip chip-icon"
+          aria-label={`Actions for ${doc.name}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpenMenuId(open ? null : doc.id)}
+        >
+          <MoreVertical className="icon-sm" aria-hidden />
         </button>
-        {doc.status === 'failed' && (
-          <button type="button" className="chip" onClick={() => void onRetry(doc)}>
-            <RefreshCw className="icon-sm" aria-hidden />
-            Retry
-          </button>
+
+        {open && (
+          <div className="file-action-menu" role="menu" aria-label={`Actions for ${doc.name}`}>
+            <Link
+              role="menuitem"
+              className="file-action-item"
+              to={`/?doc=${doc.id}`}
+              onClick={() => setOpenMenuId(null)}
+            >
+              <ExternalLink className="icon-sm" aria-hidden />
+              Open
+            </Link>
+            <Link
+              role="menuitem"
+              className="file-action-item"
+              to={`/?doc=${doc.id}&chat=1`}
+              onClick={() => setOpenMenuId(null)}
+            >
+              <MessageSquare className="icon-sm" aria-hidden />
+              Chat
+            </Link>
+            <a
+              role="menuitem"
+              className="file-action-item"
+              href={doc.cloudinaryUrl}
+              target="_blank"
+              rel="noreferrer"
+              onClick={() => setOpenMenuId(null)}
+            >
+              <Download className="icon-sm" aria-hidden />
+              Download
+            </a>
+            <button
+              type="button"
+              role="menuitem"
+              className="file-action-item"
+              onClick={() => void onRename(doc)}
+            >
+              <Pencil className="icon-sm" aria-hidden />
+              Rename
+            </button>
+            {doc.status === 'failed' && (
+              <button
+                type="button"
+                role="menuitem"
+                className="file-action-item"
+                onClick={() => void onRetry(doc)}
+              >
+                <RefreshCw className="icon-sm" aria-hidden />
+                Retry
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              className="file-action-item file-action-item-danger"
+              onClick={() => requestDelete(doc)}
+            >
+              <Trash2 className="icon-sm" aria-hidden />
+              Delete
+            </button>
+          </div>
         )}
-        <button type="button" className="chip btn-danger-text" onClick={() => void onDelete(doc)}>
-          <Trash2 className="icon-sm" aria-hidden />
-          Delete
-        </button>
       </div>
     );
   }
 
   return (
     <div className="page-shell relative mx-auto max-w-5xl">
-      <div
-        className="ambient-orb left-[-10%] top-0 bg-white/10"
-        aria-hidden
-      />
+      <div className="ambient-orb left-[-10%] top-0 bg-white/10" aria-hidden />
 
       <div className="relative z-10">
         <Link to="/" className="btn btn-ghost !px-0 text-sm text-[var(--color-ink-muted)]">
@@ -182,8 +267,8 @@ export function FilesPage() {
         <div className="glass mt-4 p-5 sm:p-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <h1 className="inline-flex items-center gap-2 font-[family-name:var(--font-display)] text-3xl tracking-tight">
-                <FileText className="size-7 text-[var(--color-ink-muted)]" aria-hidden />
+              <h1 className="inline-flex items-center gap-2.5 font-[family-name:var(--font-display)] text-3xl tracking-tight">
+                <BrandMark size="sm" showWordmark={false} />
                 Files
               </h1>
               <p className="mt-1 text-[var(--color-ink-muted)]">Manage your PDF documents</p>
@@ -244,7 +329,7 @@ export function FilesPage() {
           {error && <p className="mt-4 text-sm text-[var(--color-danger)]">{error}</p>}
         </div>
 
-        <div className="surface mt-4 overflow-hidden">
+        <div className="surface mt-4">
           <ul className="divide-y divide-[var(--color-line)] md:hidden">
             {loading ? (
               <li className="flex items-center gap-2 px-4 py-8 text-sm text-[var(--color-ink-muted)]">
@@ -258,15 +343,18 @@ export function FilesPage() {
             ) : (
               rows.map((doc) => (
                 <li key={doc.id} className="px-4 py-4">
-                  <p className="flex items-center gap-2 font-medium">
-                    <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                    <span className="truncate">{doc.name}</span>
-                  </p>
-                  <p className="mt-1 flex items-center gap-1.5 text-xs text-[var(--color-ink-muted)]">
-                    <StatusIcon doc={doc} />
-                    {formatBytes(doc.size)} · {statusLabel(doc)} · {formatRelativeDate(doc.updatedAt)}
-                  </p>
-                  <div className="mt-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-2 font-medium">
+                        <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                        <span className="truncate">{doc.name}</span>
+                      </p>
+                      <p className="mt-1 flex items-center gap-1.5 text-xs text-[var(--color-ink-muted)]">
+                        <StatusIcon doc={doc} />
+                        {formatBytes(doc.size)} · {statusLabel(doc)} ·{' '}
+                        {formatRelativeDate(doc.updatedAt)}
+                      </p>
+                    </div>
                     <DocActions doc={doc} />
                   </div>
                 </li>
@@ -333,6 +421,25 @@ export function FilesPage() {
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Delete file?"
+        description={
+          deleteTarget
+            ? `Delete “${deleteTarget.name}”? This removes the PDF, chats, and embeddings permanently.`
+            : ''
+        }
+        confirmLabel="Delete"
+        danger
+        busy={deleteBusy}
+        onCancel={() => {
+          if (!deleteBusy) setDeleteTarget(null);
+        }}
+        onConfirm={() => {
+          void confirmDelete();
+        }}
+      />
     </div>
   );
 }

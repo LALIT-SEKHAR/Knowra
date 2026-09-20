@@ -3,6 +3,7 @@ import { Navigate } from 'react-router-dom';
 import { ArrowLeft, Check, LoaderCircle, Mail, ShieldCheck } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
+import { BrandMark } from '../components/BrandMark';
 
 export function AuthPage() {
   const { user, loading, login } = useAuth();
@@ -57,10 +58,7 @@ export function AuthPage() {
       />
 
       <div className="relative z-10 w-full max-w-md">
-        <p className="font-[family-name:var(--font-display)] text-4xl tracking-tight text-[var(--color-ink)]">
-          Knowra
-        </p>
-        <p className="mt-2 text-[var(--color-ink-muted)]">Ask. Explore. Understand.</p>
+        <BrandMark size="xl" tagline stacked />
 
         <div className="glass mt-10 p-6 sm:p-7">
           <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>

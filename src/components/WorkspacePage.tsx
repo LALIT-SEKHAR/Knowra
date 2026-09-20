@@ -5,7 +5,6 @@ import {
   ArrowRight,
   FileText,
   Files,
-  Info,
   LoaderCircle,
   LogOut,
   Menu,
@@ -18,8 +17,9 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
-import type { ChatMessage, Conversation, KnowraDocument, SourceRef } from '../types';
+import type { ChatMessage, Conversation, KnowraDocument } from '../types';
 import { formatMessageTime, groupByRecency } from '../utils/format';
+import { usePreferences } from '../hooks/usePreferences';
 import { BrandMark } from './BrandMark';
 import { ConfirmDialog } from './ConfirmDialog';
 import { PdfViewer } from './PdfViewer';
@@ -27,6 +27,7 @@ import { UserAvatar, displayName } from './UserAvatar';
 
 export function WorkspacePage() {
   const { user, logout } = useAuth();
+  const { timeFormat } = usePreferences();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedDocId = searchParams.get('doc');
@@ -204,16 +205,6 @@ export function WorkspacePage() {
     }
   }
 
-  function onSourceClick(source: SourceRef) {
-    const params: Record<string, string> = { doc: source.documentId };
-    if (selectedChatId) params.conversation = selectedChatId;
-    setSearchParams(params);
-    if (source.pageNumber) {
-      setHighlightPage(source.pageNumber);
-    }
-    setMobilePanel('document');
-  }
-
   const chatGroups = groupByRecency(conversations);
   const recentFiles = documents.slice(0, 8);
 
@@ -380,7 +371,7 @@ export function WorkspacePage() {
           </p>
         )}
         {messages.map((m) => {
-          const timeLabel = formatMessageTime(m.createdAt);
+          const timeLabel = formatMessageTime(m.createdAt, timeFormat);
           return (
             <div key={m.id} className={clsx(m.role === 'user' ? 'text-right' : 'text-left')}>
               <div
@@ -409,30 +400,6 @@ export function WorkspacePage() {
                 </div>
                 {m.content}
               </div>
-              {m.sources && m.sources.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {m.sources.map((s) => {
-                    const detail = [
-                      s.documentName || 'Document',
-                      s.pageNumber ? `page ${s.pageNumber}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ');
-                    return (
-                      <button
-                        key={`${s.chunkId}-${s.pageNumber ?? 'x'}`}
-                        type="button"
-                        onClick={() => onSourceClick(s)}
-                        className="chip chip-icon"
-                        title={detail}
-                        aria-label={`Open source: ${detail}`}
-                      >
-                        <Info className="icon-sm" aria-hidden />
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
             </div>
           );
         })}

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
   Check,
+  Clock3,
   KeyRound,
   LoaderCircle,
   Save,
@@ -10,17 +11,30 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
+import { usePreferences, type TimeFormat } from '../hooks/usePreferences';
 import { UserAvatar, displayName } from '../components/UserAvatar';
 import { BrandMark } from '../components/BrandMark';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import clsx from 'clsx';
 
 export function SettingsPage() {
   const { user, refreshUser } = useAuth();
+  const { timeFormat, setTimeFormat } = usePreferences();
   const [apiKey, setApiKey] = useState('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
+  const [timeFormatSaved, setTimeFormatSaved] = useState('');
+
+  function onTimeFormatChange(format: TimeFormat) {
+    setTimeFormat(format);
+    setTimeFormatSaved(
+      format === '12h'
+        ? 'Using 12-hour time with AM/PM.'
+        : 'Using 24-hour time.',
+    );
+  }
 
   async function onSave(e: FormEvent) {
     e.preventDefault();
@@ -92,6 +106,47 @@ export function SettingsPage() {
         </header>
 
         <section className="glass mt-8 p-5 sm:p-6">
+          <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight sm:text-lg">
+            <Clock3 className="icon-sm shrink-0 text-[var(--color-ink-muted)]" strokeWidth={1.75} aria-hidden />
+            Message time format
+          </h2>
+          <p className="mt-1.5 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+            Choose how chat message timestamps appear in Knowra.
+          </p>
+          <div className="segmented mt-5 w-full max-w-sm" role="group" aria-label="Time format">
+            <button
+              type="button"
+              className={clsx('segmented-btn flex-1', timeFormat === '12h' && 'segmented-btn-active')}
+              aria-pressed={timeFormat === '12h'}
+              onClick={() => onTimeFormatChange('12h')}
+            >
+              12-hour (AM/PM)
+            </button>
+            <button
+              type="button"
+              className={clsx('segmented-btn flex-1', timeFormat === '24h' && 'segmented-btn-active')}
+              aria-pressed={timeFormat === '24h'}
+              onClick={() => onTimeFormatChange('24h')}
+            >
+              24-hour
+            </button>
+          </div>
+          <p className="mt-3 text-xs text-[var(--color-ink-muted)]">
+            Preview:{' '}
+            <span className="tabular-nums text-[var(--color-ink)]">
+              {new Date().toLocaleTimeString(undefined, {
+                hour: timeFormat === '24h' ? '2-digit' : 'numeric',
+                minute: '2-digit',
+                hour12: timeFormat === '12h',
+              })}
+            </span>
+          </p>
+          {timeFormatSaved ? (
+            <p className="mt-2 text-sm text-[var(--color-accent)]">{timeFormatSaved}</p>
+          ) : null}
+        </section>
+
+        <section className="glass mt-4 p-5 sm:p-6">
           <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight sm:text-lg">
             <KeyRound className="icon-sm shrink-0 text-[var(--color-ink-muted)]" strokeWidth={1.75} aria-hidden />
             OpenAI API key

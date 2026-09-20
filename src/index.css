@@ -349,16 +349,14 @@ body {
 }
 
 .file-action-menu {
-  position: absolute;
-  top: calc(100% + 0.35rem);
-  right: 0;
-  z-index: 30;
+  position: fixed;
+  z-index: 90;
   min-width: 10.5rem;
   padding: 0.35rem;
   border-radius: var(--radius-control);
   border: 1px solid var(--color-line);
   background: color-mix(in oklab, #1c1c1c 96%, white);
-  box-shadow: 0 16px 40px -20px rgba(0, 0, 0, 0.75);
+  box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.85);
 }
 
 .file-action-item {

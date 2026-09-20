@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -76,11 +77,19 @@ export function FilesPage() {
       if (e.key === 'Escape') setOpenMenuId(null);
     }
 
+    function onRepositionClose() {
+      setOpenMenuId(null);
+    }
+
     document.addEventListener('mousedown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
+    window.addEventListener('resize', onRepositionClose);
+    window.addEventListener('scroll', onRepositionClose, true);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('resize', onRepositionClose);
+      window.removeEventListener('scroll', onRepositionClose, true);
     };
   }, [openMenuId]);
 
@@ -174,22 +183,35 @@ export function FilesPage() {
 
   function DocActions({ doc }: { doc: KnowraDocument }) {
     const open = openMenuId === doc.id;
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
 
-    return (
-      <div className="relative inline-flex" data-file-menu={doc.id}>
-        <button
-          type="button"
-          className="chip chip-icon"
-          aria-label={`Actions for ${doc.name}`}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          onClick={() => setOpenMenuId(open ? null : doc.id)}
-        >
-          <MoreVertical className="icon-sm" aria-hidden />
-        </button>
+    useLayoutEffect(() => {
+      if (!open || !buttonRef.current) {
+        setMenuPos(null);
+        return;
+      }
 
-        {open && (
-          <div className="file-action-menu" role="menu" aria-label={`Actions for ${doc.name}`}>
+      const rect = buttonRef.current.getBoundingClientRect();
+      const menuWidth = 168;
+      const gap = 6;
+      const left = Math.min(
+        Math.max(8, rect.right - menuWidth),
+        window.innerWidth - menuWidth - 8,
+      );
+      const top = Math.min(rect.bottom + gap, window.innerHeight - 8);
+      setMenuPos({ top, left });
+    }, [open]);
+
+    const menu = open && menuPos
+      ? createPortal(
+          <div
+            className="file-action-menu"
+            role="menu"
+            aria-label={`Actions for ${doc.name}`}
+            data-file-menu={doc.id}
+            style={{ top: menuPos.top, left: menuPos.left }}
+          >
             <Link
               role="menuitem"
               className="file-action-item"
@@ -248,8 +270,25 @@ export function FilesPage() {
               <Trash2 className="icon-sm" aria-hidden />
               Delete
             </button>
-          </div>
-        )}
+          </div>,
+          document.body,
+        )
+      : null;
+
+    return (
+      <div className="inline-flex" data-file-menu={doc.id}>
+        <button
+          ref={buttonRef}
+          type="button"
+          className="chip chip-icon"
+          aria-label={`Actions for ${doc.name}`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpenMenuId(open ? null : doc.id)}
+        >
+          <MoreVertical className="icon-sm" aria-hidden />
+        </button>
+        {menu}
       </div>
     );
   }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
-import { ChevronLeft, ChevronRight, FileText, LoaderCircle } from 'lucide-react';
+import { ChevronLeft, ChevronRight, FileText, X } from 'lucide-react';
 import { getToken } from '../services/api';
+import { PdfPageSkeleton, PdfStageSkeleton } from './Skeleton';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
 
@@ -16,6 +17,7 @@ function ensurePdfWorker() {
 type Props = {
   documentId: string;
   highlightPage?: number | null;
+  onClose?: () => void;
 };
 
 function measureStageWidth(stage: HTMLElement) {
@@ -28,7 +30,7 @@ function measureStageWidth(stage: HTMLElement) {
   return Math.min(640, Math.max(280, Math.floor(window.innerWidth * 0.42)));
 }
 
-export function PdfViewer({ documentId, highlightPage }: Props) {
+export function PdfViewer({ documentId, highlightPage, onClose }: Props) {
   ensurePdfWorker();
 
   const [numPages, setNumPages] = useState(0);
@@ -146,45 +148,54 @@ export function PdfViewer({ documentId, highlightPage }: Props) {
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
       <div className="chrome-bar flex shrink-0 items-center justify-between gap-2 border-b border-[var(--color-line)] px-3 py-2.5 text-sm">
-        <span className="inline-flex items-center gap-1.5 font-medium text-[var(--color-ink-muted)]">
-          <FileText className="icon" aria-hidden />
+        <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-[var(--color-ink-muted)]">
+          <FileText className="icon shrink-0" aria-hidden />
           Document
         </span>
-        {numPages > 0 && (
-          <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
+          {numPages > 0 && (
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary !min-h-9 !px-2.5 text-xs"
+                disabled={pageNumber <= 1}
+                aria-label="Previous page"
+                onClick={() => goToPage(pageNumber - 1)}
+              >
+                <ChevronLeft className="icon" aria-hidden />
+              </button>
+              <span className="min-w-[4.5rem] text-center tabular-nums text-[var(--color-ink-muted)]">
+                {pageNumber} / {numPages}
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary !min-h-9 !px-2.5 text-xs"
+                disabled={pageNumber >= numPages}
+                aria-label="Next page"
+                onClick={() => goToPage(pageNumber + 1)}
+              >
+                <ChevronRight className="icon" aria-hidden />
+              </button>
+            </>
+          )}
+          {onClose && (
             <button
               type="button"
               className="btn btn-secondary !min-h-9 !px-2.5 text-xs"
-              disabled={pageNumber <= 1}
-              aria-label="Previous page"
-              onClick={() => goToPage(pageNumber - 1)}
+              aria-label="Close document view"
+              onClick={onClose}
             >
-              <ChevronLeft className="icon" aria-hidden />
+              <X className="icon" aria-hidden />
             </button>
-            <span className="min-w-[4.5rem] text-center tabular-nums text-[var(--color-ink-muted)]">
-              {pageNumber} / {numPages}
-            </span>
-            <button
-              type="button"
-              className="btn btn-secondary !min-h-9 !px-2.5 text-xs"
-              disabled={pageNumber >= numPages}
-              aria-label="Next page"
-              onClick={() => goToPage(pageNumber + 1)}
-            >
-              <ChevronRight className="icon" aria-hidden />
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div ref={stageRef} className="pdf-stage min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-3 sm:p-4">
         {error ? (
           <p className="text-sm text-[var(--color-danger)]">{error}</p>
         ) : loadingFile || !pdfData ? (
-          <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
-            <LoaderCircle className="icon animate-spin" aria-hidden />
-            Loading PDF…
-          </p>
+          <PdfStageSkeleton />
         ) : (
           <Document
             key={documentId}
@@ -197,12 +208,7 @@ export function PdfViewer({ documentId, highlightPage }: Props) {
               console.error(err);
               setError('Failed to parse PDF preview');
             }}
-            loading={
-              <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
-                <LoaderCircle className="icon animate-spin" aria-hidden />
-                Rendering PDF…
-              </p>
-            }
+            loading={<PdfStageSkeleton />}
             className="pdf-document mx-auto flex w-full flex-col items-center gap-3"
           >
             {Array.from({ length: numPages }, (_, i) => {
@@ -221,12 +227,7 @@ export function PdfViewer({ documentId, highlightPage }: Props) {
                     renderTextLayer={false}
                     renderAnnotationLayer={false}
                     loading={
-                      <div
-                        className="flex items-center justify-center bg-neutral-100 text-neutral-500"
-                        style={{ width: pageWidth, height: Math.round(pageWidth * 1.3) }}
-                      >
-                        <LoaderCircle className="icon animate-spin" aria-hidden />
-                      </div>
+                      <PdfPageSkeleton width={pageWidth} height={Math.round(pageWidth * 1.3)} />
                     }
                   />
                 </div>

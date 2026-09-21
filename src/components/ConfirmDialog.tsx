@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import clsx from 'clsx';
 
 export type ConfirmDialogProps = {
@@ -9,6 +9,8 @@ export type ConfirmDialogProps = {
   cancelLabel?: string;
   danger?: boolean;
   busy?: boolean;
+  /** If set, user must type this exact text before confirm is enabled */
+  requireText?: string;
   onConfirm: () => void;
   onCancel: () => void;
 };
@@ -21,15 +23,20 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   danger = false,
   busy = false,
+  requireText,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
   const titleId = useId();
   const descriptionId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const [typed, setTyped] = useState('');
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setTyped('');
+      return;
+    }
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -48,6 +55,8 @@ export function ConfirmDialog({
 
   if (!open) return null;
 
+  const requireOk = !requireText || typed.trim() === requireText;
+
   return (
     <div className="confirm-overlay" role="presentation" onMouseDown={busy ? undefined : onCancel}>
       <div
@@ -64,6 +73,20 @@ export function ConfirmDialog({
         <p id={descriptionId} className="mt-2 text-sm leading-relaxed text-[var(--color-ink-muted)]">
           {description}
         </p>
+        {requireText ? (
+          <label className="mt-4 block text-sm font-medium">
+            Type <span className="font-mono text-[var(--color-ink)]">{requireText}</span> to confirm
+            <input
+              type="text"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              className="field mt-1.5"
+              disabled={busy}
+            />
+          </label>
+        ) : null}
         <div className="mt-6 flex flex-wrap justify-end gap-2">
           <button
             ref={cancelRef}
@@ -76,8 +99,8 @@ export function ConfirmDialog({
           </button>
           <button
             type="button"
-            className={clsx('btn', danger ? 'btn-danger' : 'btn-primary')}
-            disabled={busy}
+            className={clsx('btn', danger ? 'btn-danger-soft' : 'btn-primary')}
+            disabled={busy || !requireOk}
             onClick={onConfirm}
           >
             {busy ? 'Please wait…' : confirmLabel}

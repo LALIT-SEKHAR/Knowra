@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
+import clsx from 'clsx';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -24,6 +25,16 @@ import { useAuth } from '../hooks/useAuth';
 import { UserAvatar, displayName } from '../components/UserAvatar';
 import { BrandMark } from '../components/BrandMark';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { FilesListSkeleton, FilesTableSkeleton } from '../components/Skeleton';
+
+type PendingUpload = {
+  localId: string;
+  name: string;
+  size: number;
+  progress: number;
+  status: 'uploading' | 'failed';
+  errorMessage?: string;
+};
 
 export function FilesPage() {
   const { user } = useAuth();
@@ -31,11 +42,13 @@ export function FilesPage() {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [uploading, setUploading] = useState(false);
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<KnowraDocument | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const uploading = pendingUploads.some((u) => u.status === 'uploading');
 
   const load = useCallback(async (q?: string) => {
     setError('');
@@ -60,7 +73,7 @@ export function FilesPage() {
     if (!hasProcessing) return;
     const id = setInterval(() => {
       void load(query || undefined);
-    }, 2500);
+    }, 1500);
     return () => clearInterval(id);
   }, [documents, load, query]);
 
@@ -99,22 +112,90 @@ export function FilesPage() {
     await load(query || undefined);
   }
 
-  async function onUpload(file: File) {
+  async function onUpload(fileList: FileList | File[]) {
     if (!user?.hasOpenAIKey) {
-      setError('Add your OpenAI API key in Settings before uploading.');
+      setError('Add your OpenAI API key in Settings → AI before uploading.');
       return;
     }
-    setUploading(true);
-    setError('');
+
+    const selected = Array.from(fileList);
+    const pdfs = selected.filter((f) => !f.type || f.type === 'application/pdf');
+    const skipped = selected.length - pdfs.length;
+
+    if (pdfs.length === 0) {
+      setError('Only PDF files are supported');
+      if (fileRef.current) fileRef.current.value = '';
+      return;
+    }
+
+    const batch = pdfs.map((file, index) => ({
+      localId: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      size: file.size,
+      progress: 0,
+      status: 'uploading' as const,
+      file,
+    }));
+
+    setPendingUploads((prev) => [
+      ...batch.map(({ file: _f, ...rest }) => rest),
+      ...prev.filter((u) => u.status === 'uploading'),
+    ]);
+
     try {
-      await api.uploadDocument(file);
+      const results = await api.uploadDocuments(
+        batch.map((b) => b.file),
+        {
+          onFileProgress: (_file, index, percent) => {
+            const localId = batch[index]?.localId;
+            if (!localId) return;
+            setPendingUploads((prev) =>
+              prev.map((u) => (u.localId === localId ? { ...u, progress: percent } : u)),
+            );
+          },
+          onFileComplete: (_file, index) => {
+            const localId = batch[index]?.localId;
+            if (!localId) return;
+            setPendingUploads((prev) => prev.filter((u) => u.localId !== localId));
+          },
+          onFileError: (_file, index, err) => {
+            const localId = batch[index]?.localId;
+            if (!localId) return;
+            const message = err instanceof ApiError ? err.message : 'Upload failed';
+            setPendingUploads((prev) =>
+              prev.map((u) =>
+                u.localId === localId
+                  ? { ...u, status: 'failed', progress: 0, errorMessage: message }
+                  : u,
+              ),
+            );
+          },
+        },
+      );
+
       await load(query || undefined);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Upload failed');
+
+      const failedCount = results.filter((r) => r.error).length;
+      const okCount = results.length - failedCount;
+      const notes: string[] = [];
+      if (skipped > 0) {
+        notes.push(
+          `${skipped} non-PDF file${skipped === 1 ? '' : 's'} skipped`,
+        );
+      }
+      if (failedCount > 0 && okCount > 0) {
+        notes.push(`${okCount} uploaded, ${failedCount} failed`);
+      } else if (failedCount > 0 && okCount === 0) {
+        notes.push(failedCount === 1 ? 'Upload failed' : `${failedCount} uploads failed`);
+      }
+      setError(notes.join('. '));
     } finally {
-      setUploading(false);
       if (fileRef.current) fileRef.current.value = '';
     }
+  }
+
+  function dismissFailedUpload(localId: string) {
+    setPendingUploads((prev) => prev.filter((u) => u.localId !== localId));
   }
 
   async function onRename(doc: KnowraDocument) {
@@ -161,14 +242,109 @@ export function FilesPage() {
 
   const rows = useMemo(() => documents, [documents]);
 
+  const uploadButtonLabel = useMemo(() => {
+    const active = pendingUploads.filter((u) => u.status === 'uploading');
+    if (active.length === 0) return 'Upload';
+    if (active.length === 1) return `Uploading ${active[0]!.progress}%`;
+    const avg = Math.round(active.reduce((sum, u) => sum + u.progress, 0) / active.length);
+    return `Uploading ${active.length} files · ${avg}%`;
+  }, [pendingUploads]);
+
   function statusLabel(doc: KnowraDocument) {
     if (doc.status === 'ready') return 'Ready';
-    if (doc.status === 'processing') return 'Processing…';
-    if (doc.status === 'uploading') return 'Uploading…';
+    if (doc.status === 'processing') {
+      const pct =
+        typeof doc.progress === 'number' ? Math.max(0, Math.min(100, Math.round(doc.progress))) : null;
+      return pct !== null ? `Processing ${pct}%` : 'Processing…';
+    }
+    if (doc.status === 'uploading') {
+      const pct =
+        typeof doc.progress === 'number' ? Math.max(0, Math.min(100, Math.round(doc.progress))) : null;
+      return pct !== null ? `Uploading ${pct}%` : 'Uploading…';
+    }
     if (doc.status === 'failed') {
       return `Failed${doc.errorMessage ? `: ${doc.errorMessage}` : ''}`;
     }
     return doc.status;
+  }
+
+  function PendingStatus({ upload }: { upload: PendingUpload }) {
+    const pct = Math.max(0, Math.min(100, Math.round(upload.progress)));
+    const failed = upload.status === 'failed';
+
+    return (
+      <span
+        className={clsx(
+          'inline-flex min-w-0 flex-col gap-1',
+          failed && 'text-[var(--color-danger)]',
+        )}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          {failed ? (
+            <XCircle className="icon-sm text-[var(--color-danger)]" aria-hidden />
+          ) : (
+            <LoaderCircle className="icon-sm animate-spin text-[var(--color-ink-muted)]" aria-hidden />
+          )}
+          <span>
+            {failed
+              ? `Failed${upload.errorMessage ? `: ${upload.errorMessage}` : ''}`
+              : `Uploading ${pct}%`}
+          </span>
+        </span>
+        {!failed ? (
+          <span
+            className="block h-1 w-24 overflow-hidden rounded-full bg-white/10"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={`Uploading ${pct}%`}
+          >
+            <span
+              className="block h-full rounded-full bg-white/70 transition-[width] duration-300"
+              style={{ width: `${pct}%` }}
+            />
+          </span>
+        ) : null}
+      </span>
+    );
+  }
+
+  function StatusCell({ doc }: { doc: KnowraDocument }) {
+    const processing = doc.status === 'processing' || doc.status === 'uploading';
+    const pct =
+      processing && typeof doc.progress === 'number'
+        ? Math.max(0, Math.min(100, Math.round(doc.progress)))
+        : null;
+
+    return (
+      <span
+        className={clsx(
+          'inline-flex min-w-0 flex-col gap-1',
+          doc.status === 'failed' && 'text-[var(--color-danger)]',
+        )}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <StatusIcon doc={doc} />
+          <span className={clsx(!processing && 'capitalize')}>{statusLabel(doc)}</span>
+        </span>
+        {pct !== null ? (
+          <span
+            className="block h-1 w-24 overflow-hidden rounded-full bg-white/10"
+            role="progressbar"
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label={`${doc.status === 'uploading' ? 'Uploading' : 'Processing'} ${pct}%`}
+          >
+            <span
+              className="block h-full rounded-full bg-white/70 transition-[width] duration-500"
+              style={{ width: `${pct}%` }}
+            />
+          </span>
+        ) : null}
+      </span>
+    );
   }
 
   function StatusIcon({ doc }: { doc: KnowraDocument }) {
@@ -299,6 +475,8 @@ export function FilesPage() {
     );
   }
 
+  const empty = !loading && rows.length === 0 && pendingUploads.length === 0;
+
   return (
     <div className="page-shell relative mx-auto max-w-5xl">
       <div className="ambient-orb left-[-10%] top-0 bg-white/10" aria-hidden />
@@ -316,7 +494,10 @@ export function FilesPage() {
                 <BrandMark size="sm" showWordmark={false} />
                 Files
               </h1>
-              <p className="mt-1 text-[var(--color-ink-muted)]">Manage your PDF documents</p>
+              <p className="mt-1 text-[var(--color-ink-muted)]">
+                Manage your PDFs. Your OpenAI key is used to read scanned pages and make files
+                searchable.
+              </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <Link
@@ -356,16 +537,17 @@ export function FilesPage() {
                 ) : (
                   <Upload className="icon" aria-hidden />
                 )}
-                {uploading ? 'Uploading…' : 'Upload'}
+                {uploadButtonLabel}
               </button>
               <input
                 ref={fileRef}
                 type="file"
                 accept="application/pdf"
+                multiple
                 className="hidden"
                 onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) void onUpload(file);
+                  const files = e.target.files;
+                  if (files && files.length > 0) void onUpload(files);
                 }}
               />
             </div>
@@ -375,35 +557,104 @@ export function FilesPage() {
         </div>
 
         <div className="surface mt-4">
-          <ul className="divide-y divide-[var(--color-line)] md:hidden">
-            {loading ? (
-              <li className="flex items-center gap-2 px-4 py-8 text-sm text-[var(--color-ink-muted)]">
-                <LoaderCircle className="icon animate-spin" aria-hidden />
-                Loading…
-              </li>
-            ) : rows.length === 0 ? (
+          <ul
+            className="divide-y divide-[var(--color-line)] md:hidden"
+            aria-busy={loading && pendingUploads.length === 0}
+          >
+            {loading && pendingUploads.length === 0 ? (
+              <FilesListSkeleton />
+            ) : empty ? (
               <li className="px-4 py-8 text-sm text-[var(--color-ink-muted)]">
-                No files yet. Upload a PDF to get started.
+                No files yet. Upload PDFs to get started.
               </li>
             ) : (
-              rows.map((doc) => (
-                <li key={doc.id} className="px-4 py-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="flex items-center gap-2 font-medium">
-                        <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                        <span className="truncate">{doc.name}</span>
-                      </p>
-                      <p className="mt-1 flex items-center gap-1.5 text-xs text-[var(--color-ink-muted)]">
-                        <StatusIcon doc={doc} />
-                        {formatBytes(doc.size)} · {statusLabel(doc)} ·{' '}
-                        {formatRelativeDate(doc.updatedAt)}
-                      </p>
+              <>
+                {pendingUploads.map((upload) => (
+                  <li key={upload.localId} className="px-4 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="flex items-center gap-2 font-medium">
+                          <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                          <span className="truncate">{upload.name}</span>
+                        </p>
+                        <p className="mt-1 flex items-start gap-1.5 text-xs text-[var(--color-ink-muted)]">
+                          <span className="min-w-0">
+                            {formatBytes(upload.size)} ·{' '}
+                            {upload.status === 'failed'
+                              ? `Failed${upload.errorMessage ? `: ${upload.errorMessage}` : ''}`
+                              : `Uploading ${Math.round(upload.progress)}%`}
+                            {upload.status === 'uploading' ? (
+                              <span
+                                className="mt-1.5 block h-1 w-28 overflow-hidden rounded-full bg-white/10"
+                                role="progressbar"
+                                aria-valuenow={Math.round(upload.progress)}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                              >
+                                <span
+                                  className="block h-full rounded-full bg-white/70 transition-[width] duration-300"
+                                  style={{
+                                    width: `${Math.max(0, Math.min(100, Math.round(upload.progress)))}%`,
+                                  }}
+                                />
+                              </span>
+                            ) : null}
+                          </span>
+                        </p>
+                      </div>
+                      {upload.status === 'failed' ? (
+                        <button
+                          type="button"
+                          className="chip chip-icon"
+                          aria-label="Dismiss"
+                          onClick={() => dismissFailedUpload(upload.localId)}
+                        >
+                          <XCircle className="icon-sm" aria-hidden />
+                        </button>
+                      ) : null}
                     </div>
-                    <DocActions doc={doc} />
-                  </div>
-                </li>
-              ))
+                  </li>
+                ))}
+                {rows.map((doc) => (
+                  <li key={doc.id} className="px-4 py-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="flex items-center gap-2 font-medium">
+                          <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                          <span className="truncate">{doc.name}</span>
+                        </p>
+                        <p className="mt-1 flex items-start gap-1.5 text-xs text-[var(--color-ink-muted)]">
+                          <span className="mt-0.5 shrink-0">
+                            <StatusIcon doc={doc} />
+                          </span>
+                          <span className="min-w-0">
+                            {formatBytes(doc.size)} · {statusLabel(doc)} ·{' '}
+                            {formatRelativeDate(doc.updatedAt)}
+                            {(doc.status === 'processing' || doc.status === 'uploading') &&
+                            typeof doc.progress === 'number' ? (
+                              <span
+                                className="mt-1.5 block h-1 w-28 overflow-hidden rounded-full bg-white/10"
+                                role="progressbar"
+                                aria-valuenow={Math.round(doc.progress)}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                              >
+                                <span
+                                  className="block h-full rounded-full bg-white/70 transition-[width] duration-500"
+                                  style={{
+                                    width: `${Math.max(0, Math.min(100, Math.round(doc.progress)))}%`,
+                                  }}
+                                />
+                              </span>
+                            ) : null}
+                          </span>
+                        </p>
+                      </div>
+                      <DocActions doc={doc} />
+                    </div>
+                  </li>
+                ))}
+              </>
             )}
           </ul>
 
@@ -419,47 +670,68 @@ export function FilesPage() {
                   <th className="px-4 py-3.5 font-medium">Actions</th>
                 </tr>
               </thead>
-              <tbody>
-                {loading ? (
+              <tbody aria-busy={loading && pendingUploads.length === 0}>
+                {loading && pendingUploads.length === 0 ? (
+                  <FilesTableSkeleton />
+                ) : empty ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-[var(--color-ink-muted)]">
-                      <span className="inline-flex items-center gap-2">
-                        <LoaderCircle className="icon animate-spin" aria-hidden />
-                        Loading…
-                      </span>
-                    </td>
-                  </tr>
-                ) : rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-8 text-[var(--color-ink-muted)]">
-                      No files yet. Upload a PDF to get started.
+                      No files yet. Upload PDFs to get started.
                     </td>
                   </tr>
                 ) : (
-                  rows.map((doc) => (
-                    <tr key={doc.id} className="border-t border-[var(--color-line)]">
-                      <td className="px-4 py-3.5">
-                        <span className="inline-flex max-w-xs items-center gap-2 font-medium">
-                          <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                          <span className="truncate">{doc.name}</span>
-                        </span>
-                      </td>
-                      <td className="px-4 py-3.5">PDF</td>
-                      <td className="px-4 py-3.5">{formatBytes(doc.size)}</td>
-                      <td
-                        className={`px-4 py-3.5 ${doc.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
-                      >
-                        <span className="inline-flex items-center gap-1.5 capitalize">
-                          <StatusIcon doc={doc} />
-                          {statusLabel(doc)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3.5">{formatRelativeDate(doc.updatedAt)}</td>
-                      <td className="px-4 py-3.5">
-                        <DocActions doc={doc} />
-                      </td>
-                    </tr>
-                  ))
+                  <>
+                    {pendingUploads.map((upload) => (
+                      <tr key={upload.localId} className="border-t border-[var(--color-line)]">
+                        <td className="px-4 py-3.5">
+                          <span className="inline-flex max-w-xs items-center gap-2 font-medium">
+                            <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                            <span className="truncate">{upload.name}</span>
+                          </span>
+                        </td>
+                        <td className="px-4 py-3.5">PDF</td>
+                        <td className="px-4 py-3.5">{formatBytes(upload.size)}</td>
+                        <td
+                          className={`px-4 py-3.5 ${upload.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
+                        >
+                          <PendingStatus upload={upload} />
+                        </td>
+                        <td className="px-4 py-3.5 text-[var(--color-ink-muted)]">Just now</td>
+                        <td className="px-4 py-3.5">
+                          {upload.status === 'failed' ? (
+                            <button
+                              type="button"
+                              className="chip"
+                              onClick={() => dismissFailedUpload(upload.localId)}
+                            >
+                              Dismiss
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    ))}
+                    {rows.map((doc) => (
+                      <tr key={doc.id} className="border-t border-[var(--color-line)]">
+                        <td className="px-4 py-3.5">
+                          <span className="inline-flex max-w-xs items-center gap-2 font-medium">
+                            <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                            <span className="truncate">{doc.name}</span>
+                          </span>
+                        </td>
+                        <td className="px-4 py-3.5">PDF</td>
+                        <td className="px-4 py-3.5">{formatBytes(doc.size)}</td>
+                        <td
+                          className={`px-4 py-3.5 ${doc.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
+                        >
+                          <StatusCell doc={doc} />
+                        </td>
+                        <td className="px-4 py-3.5">{formatRelativeDate(doc.updatedAt)}</td>
+                        <td className="px-4 py-3.5">
+                          <DocActions doc={doc} />
+                        </td>
+                      </tr>
+                    ))}
+                  </>
                 )}
               </tbody>
             </table>

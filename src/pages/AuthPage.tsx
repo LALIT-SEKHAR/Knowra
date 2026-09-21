@@ -1,9 +1,15 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Navigate } from 'react-router-dom';
-import { ArrowLeft, Check, LoaderCircle, Mail, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Check, LoaderCircle, Mail, RefreshCw, ShieldCheck } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { BrandMark } from '../components/BrandMark';
+
+function formatCountdown(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
 
 export function AuthPage() {
   const { user, loading, login } = useAuth();
@@ -12,9 +18,34 @@ export function AuthPage() {
   const [step, setStep] = useState<'email' | 'otp'>('email');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [resendAvailableAt, setResendAvailableAt] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (step !== 'otp') return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [step]);
+
+  const expiresIn = expiresAt
+    ? Math.max(0, Math.ceil((new Date(expiresAt).getTime() - now) / 1000))
+    : 0;
+  const resendIn = resendAvailableAt
+    ? Math.max(0, Math.ceil((new Date(resendAvailableAt).getTime() - now) / 1000))
+    : 0;
+  const expired = Boolean(expiresAt) && expiresIn === 0;
+  const canResend = !busy && !resending && resendIn === 0;
 
   if (!loading && user) {
     return <Navigate to="/" replace />;
+  }
+
+  function applyOtpTiming(result: { expiresAt: string; resendAvailableAt: string }) {
+    setExpiresAt(result.expiresAt);
+    setResendAvailableAt(result.resendAvailableAt);
+    setNow(Date.now());
   }
 
   async function onRequestOtp(e: FormEvent) {
@@ -22,12 +53,44 @@ export function AuthPage() {
     setError('');
     setBusy(true);
     try {
-      await api.requestOtp(email);
+      const result = await api.requestOtp(email);
+      applyOtpTiming(result);
+      setCode('');
       setStep('otp');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to send code');
+      if (err instanceof ApiError) {
+        setError(err.message);
+        if (typeof err.details.resendAvailableAt === 'string') {
+          setResendAvailableAt(err.details.resendAvailableAt);
+        }
+      } else {
+        setError('Failed to send code');
+      }
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onResendOtp() {
+    if (!canResend) return;
+    setError('');
+    setResending(true);
+    try {
+      const result = await api.requestOtp(email);
+      applyOtpTiming(result);
+      setCode('');
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.message);
+        if (typeof err.details.resendAvailableAt === 'string') {
+          setResendAvailableAt(err.details.resendAvailableAt);
+          setNow(Date.now());
+        }
+      } else {
+        setError('Failed to resend code');
+      }
+    } finally {
+      setResending(false);
     }
   }
 
@@ -37,6 +100,16 @@ export function AuthPage() {
     setBusy(true);
     try {
       const result = await api.verifyOtp(email.trim(), code.replace(/\s+/g, ''));
+      if (result.deletionCancelled) {
+        try {
+          sessionStorage.setItem(
+            'knowra_notice',
+            'Welcome back — your scheduled account deletion was cancelled.',
+          );
+        } catch {
+          // ignore
+        }
+      }
       await login(result.token);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Verification failed');
@@ -119,8 +192,19 @@ export function AuthPage() {
                   />
                 </div>
               </label>
+
+              <p
+                className={`text-sm ${expired ? 'text-[var(--color-danger)]' : 'text-[var(--color-ink-muted)]'}`}
+                aria-live="polite"
+              >
+                {expired
+                  ? 'Code expired. Request a new one to continue.'
+                  : `Code expires in ${formatCountdown(expiresIn)}`}
+              </p>
+
               {error && <p className="text-sm text-[var(--color-danger)]">{error}</p>}
-              <button type="submit" disabled={busy} className="btn btn-primary w-full">
+
+              <button type="submit" disabled={busy || expired} className="btn btn-primary w-full">
                 {busy ? (
                   <LoaderCircle className="icon animate-spin" aria-hidden />
                 ) : (
@@ -128,6 +212,25 @@ export function AuthPage() {
                 )}
                 {busy ? 'Verifying…' : 'Verify & continue'}
               </button>
+
+              <button
+                type="button"
+                className="btn btn-secondary w-full text-sm"
+                disabled={!canResend}
+                onClick={() => void onResendOtp()}
+              >
+                {resending ? (
+                  <LoaderCircle className="icon animate-spin" aria-hidden />
+                ) : (
+                  <RefreshCw className="icon" aria-hidden />
+                )}
+                {resending
+                  ? 'Resending…'
+                  : resendIn > 0
+                    ? `Resend code in ${formatCountdown(resendIn)}`
+                    : 'Resend code'}
+              </button>
+
               <button
                 type="button"
                 className="btn btn-ghost w-full text-sm"
@@ -135,6 +238,8 @@ export function AuthPage() {
                   setStep('email');
                   setCode('');
                   setError('');
+                  setExpiresAt(null);
+                  setResendAvailableAt(null);
                 }}
               >
                 <ArrowLeft className="icon" aria-hidden />

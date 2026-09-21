@@ -21,8 +21,10 @@ import type { ChatMessage, Conversation, KnowraDocument } from '../types';
 import { formatMessageTime, groupByRecency } from '../utils/format';
 import { usePreferences } from '../hooks/usePreferences';
 import { BrandMark } from './BrandMark';
+import { ChatMarkdown } from './ChatMarkdown';
 import { ConfirmDialog } from './ConfirmDialog';
 import { PdfViewer } from './PdfViewer';
+import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
 import { UserAvatar, displayName } from './UserAvatar';
 
 export function WorkspacePage() {
@@ -37,6 +39,9 @@ export function WorkspacePage() {
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'document'>('chat');
   const [documents, setDocuments] = useState<KnowraDocument[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [listsLoading, setListsLoading] = useState(true);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [notice, setNotice] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
@@ -44,6 +49,15 @@ export function WorkspacePage() {
   const [highlightPage, setHighlightPage] = useState<number | null>(null);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
+  const [pendingUploads, setPendingUploads] = useState<
+    Array<{
+      localId: string;
+      name: string;
+      progress: number;
+      status: 'uploading' | 'failed';
+      errorMessage?: string;
+    }>
+  >([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatLoadIdRef = useRef(0);
@@ -63,13 +77,29 @@ export function WorkspacePage() {
   }
 
   useEffect(() => {
-    void refreshLists().catch((err) => {
-      setError(err instanceof ApiError ? err.message : 'Failed to load workspace');
-    });
+    void refreshLists()
+      .catch((err) => {
+        setError(err instanceof ApiError ? err.message : 'Failed to load workspace');
+      })
+      .finally(() => setListsLoading(false));
   }, []);
 
   useEffect(() => {
-    const hasProcessing = documents.some((d) => d.status === 'processing');
+    try {
+      const stored = sessionStorage.getItem('knowra_notice');
+      if (stored) {
+        setNotice(stored);
+        sessionStorage.removeItem('knowra_notice');
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    const hasProcessing = documents.some(
+      (d) => d.status === 'processing' || d.status === 'uploading',
+    );
     if (!hasProcessing) return;
     const id = setInterval(() => {
       void api.listDocuments().then((res) => setDocuments(res.documents));
@@ -80,10 +110,12 @@ export function WorkspacePage() {
   useEffect(() => {
     if (!selectedChatId) {
       setMessages([]);
+      setMessagesLoading(false);
       return;
     }
 
     const loadId = ++chatLoadIdRef.current;
+    setMessagesLoading(true);
     void api
       .getConversation(selectedChatId)
       .then((res) => {
@@ -99,6 +131,9 @@ export function WorkspacePage() {
       .catch((err) => {
         if (loadId !== chatLoadIdRef.current) return;
         setError(err instanceof ApiError ? err.message : 'Failed to load chat');
+      })
+      .finally(() => {
+        if (loadId === chatLoadIdRef.current) setMessagesLoading(false);
       });
   }, [selectedChatId, selectedDocId, setSearchParams]);
 
@@ -120,6 +155,14 @@ export function WorkspacePage() {
     setMobilePanel('document');
   }
 
+  function closeDocumentView() {
+    const next = new URLSearchParams();
+    if (selectedChatId) next.set('conversation', selectedChatId);
+    setSearchParams(next, { replace: true });
+    setHighlightPage(null);
+    setMobilePanel('chat');
+  }
+
   function selectConversation(c: Conversation) {
     const params: Record<string, string> = { conversation: c.id };
     if (c.documentId) params.doc = c.documentId;
@@ -135,6 +178,7 @@ export function WorkspacePage() {
     setError('');
     setQuestion('');
     setMessages([]);
+    setMessagesLoading(false);
     setHighlightPage(null);
     setBusy(false);
 
@@ -145,18 +189,85 @@ export function WorkspacePage() {
     setDrawerOpen(false);
   }
 
-  async function onUpload(file: File) {
+  async function onUpload(fileList: FileList | File[]) {
     if (!user?.hasOpenAIKey) {
-      setError('Add your OpenAI API key in Settings before uploading.');
+      setError('Add your OpenAI API key in Settings → AI before uploading.');
       return;
     }
-    setError('');
-    try {
-      const res = await api.uploadDocument(file);
-      await refreshLists();
-      setSearchParams({ doc: res.document.id });
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Upload failed');
+
+    const selected = Array.from(fileList);
+    const pdfs = selected.filter((f) => !f.type || f.type === 'application/pdf');
+    const skipped = selected.length - pdfs.length;
+
+    if (pdfs.length === 0) {
+      setError('Only PDF files are supported');
+      return;
+    }
+
+    const batch = pdfs.map((file, index) => ({
+      localId: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      name: file.name,
+      progress: 0,
+      status: 'uploading' as const,
+      file,
+    }));
+
+    setPendingUploads((prev) => [
+      ...batch.map(({ file: _f, ...rest }) => rest),
+      ...prev.filter((u) => u.status === 'uploading'),
+    ]);
+
+    let lastDocumentId: string | null = null;
+
+    const results = await api.uploadDocuments(
+      batch.map((b) => b.file),
+      {
+        onFileProgress: (_file, index, percent) => {
+          const localId = batch[index]?.localId;
+          if (!localId) return;
+          setPendingUploads((prev) =>
+            prev.map((u) => (u.localId === localId ? { ...u, progress: percent } : u)),
+          );
+        },
+        onFileComplete: (_file, index, res) => {
+          const localId = batch[index]?.localId;
+          lastDocumentId = res.document.id;
+          if (localId) {
+            setPendingUploads((prev) => prev.filter((u) => u.localId !== localId));
+          }
+        },
+        onFileError: (_file, index, err) => {
+          const localId = batch[index]?.localId;
+          if (!localId) return;
+          const message = err instanceof ApiError ? err.message : 'Upload failed';
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? { ...u, status: 'failed', progress: 0, errorMessage: message }
+                : u,
+            ),
+          );
+        },
+      },
+    );
+
+    await refreshLists();
+
+    const failedCount = results.filter((r) => r.error).length;
+    const okCount = results.length - failedCount;
+    const notes: string[] = [];
+    if (skipped > 0) {
+      notes.push(`${skipped} non-PDF file${skipped === 1 ? '' : 's'} skipped`);
+    }
+    if (failedCount > 0 && okCount > 0) {
+      notes.push(`${okCount} uploaded, ${failedCount} failed`);
+    } else if (failedCount > 0 && okCount === 0) {
+      notes.push(failedCount === 1 ? 'Upload failed' : `${failedCount} uploads failed`);
+    }
+    setError(notes.join('. '));
+
+    if (lastDocumentId) {
+      setSearchParams({ doc: lastDocumentId });
     }
   }
 
@@ -168,9 +279,12 @@ export function WorkspacePage() {
   async function onAsk(e: FormEvent) {
     e.preventDefault();
     if (!question.trim()) return;
-    if (!user?.hasOpenAIKey) {
-      setError('Add your OpenAI API key in Settings before chatting.');
-      return;
+    if (!user?.canChat) {
+      setError(
+        user?.hasOpenAIKey
+          ? 'Finish chat setup in Settings → AI (provider key) before chatting.'
+          : 'Add your OpenAI API key in Settings → AI before chatting.',
+      );      return;
     }
     if (readyDocs.length === 0) {
       setError('Upload and process at least one PDF before chatting.');
@@ -207,6 +321,14 @@ export function WorkspacePage() {
 
   const chatGroups = groupByRecency(conversations);
   const recentFiles = documents.slice(0, 8);
+  const uploading = pendingUploads.some((u) => u.status === 'uploading');
+  const uploadLabel = (() => {
+    const active = pendingUploads.filter((u) => u.status === 'uploading');
+    if (active.length === 0) return 'Upload';
+    if (active.length === 1) return `${active[0]!.progress}%`;
+    const avg = Math.round(active.reduce((sum, u) => sum + u.progress, 0) / active.length);
+    return `${active.length} · ${avg}%`;
+  })();
 
   const sidebar = (
     <aside className="glass flex h-full w-[17.5rem] shrink-0 flex-col overflow-hidden">
@@ -226,28 +348,36 @@ export function WorkspacePage() {
             New Chat
           </button>
         </div>
-        {chatGroups.length === 0 && (
-          <p className="mb-4 px-2 text-xs text-[var(--color-ink-muted)]">No chats yet</p>
-        )}
-        {chatGroups.map((group) => (
-          <div key={group.label} className="mb-3">
-            <p className="mb-1 px-2 text-[11px] font-medium text-[var(--color-ink-muted)]">{group.label}</p>
-            <ul className="space-y-0.5">
-              {group.items.map((c) => (
-                <li key={c.id}>
-                  <button
-                    type="button"
-                    onClick={() => selectConversation(c)}
-                    className={clsx('nav-item', selectedChatId === c.id && 'nav-item-active')}
-                  >
-                    <MessageSquare className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                    <span className="truncate">{c.title}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+        {listsLoading ? (
+          <div className="mb-4" aria-busy="true" aria-label="Loading chats">
+            <WorkspaceNavSkeleton items={5} />
           </div>
-        ))}
+        ) : (
+          <>
+            {chatGroups.length === 0 && (
+              <p className="mb-4 px-2 text-xs text-[var(--color-ink-muted)]">No chats yet</p>
+            )}
+            {chatGroups.map((group) => (
+              <div key={group.label} className="mb-3">
+                <p className="mb-1 px-2 text-[11px] font-medium text-[var(--color-ink-muted)]">{group.label}</p>
+                <ul className="space-y-0.5">
+                  {group.items.map((c) => (
+                    <li key={c.id}>
+                      <button
+                        type="button"
+                        onClick={() => selectConversation(c)}
+                        className={clsx('nav-item', selectedChatId === c.id && 'nav-item-active')}
+                      >
+                        <MessageSquare className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                        <span className="truncate">{c.title}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </>
+        )}
 
         <div className="mt-4 border-t border-[var(--color-line)] pt-3">
           <div className="mb-2 flex items-center justify-between px-1">
@@ -255,31 +385,69 @@ export function WorkspacePage() {
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
-              className="btn-ghost inline-flex items-center gap-1 text-xs text-[var(--color-accent)]"
+              disabled={uploading}
+              className="btn-ghost inline-flex items-center gap-1 text-xs text-[var(--color-accent)] disabled:opacity-60"
             >
-              <Upload className="icon-sm" aria-hidden />
-              Upload
+              {uploading ? (
+                <LoaderCircle className="icon-sm animate-spin" aria-hidden />
+              ) : (
+                <Upload className="icon-sm" aria-hidden />
+              )}
+              {uploadLabel}
             </button>
           </div>
-          <ul className="space-y-0.5">
-            {recentFiles.map((doc) => (
-              <li key={doc.id}>
-                <button
-                  type="button"
-                  onClick={() => selectDocument(doc.id)}
-                  className={clsx('nav-item', selectedDocId === doc.id && 'nav-item-active')}
-                >
-                  <FileText className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                  <span className="min-w-0 flex-1 truncate">
-                    {doc.name}
-                    {doc.status !== 'ready' && (
-                      <span className="ml-1 text-[11px] text-[var(--color-ink-muted)]">({doc.status})</span>
-                    )}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          {listsLoading && pendingUploads.length === 0 ? (
+            <div aria-busy="true" aria-label="Loading files">
+              <WorkspaceNavSkeleton items={3} />
+            </div>
+          ) : (
+            <ul className="space-y-0.5">
+              {pendingUploads.map((upload) => (
+                <li key={upload.localId}>
+                  <div className="nav-item pointer-events-none">
+                    <FileText className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate">
+                      {upload.name}
+                      <span
+                        className={clsx(
+                          'ml-1 text-[11px]',
+                          upload.status === 'failed'
+                            ? 'text-[var(--color-danger)]'
+                            : 'text-[var(--color-ink-muted)]',
+                        )}
+                      >
+                        {upload.status === 'failed'
+                          ? '(failed)'
+                          : `(${Math.round(upload.progress)}%)`}
+                      </span>
+                    </span>
+                  </div>
+                </li>
+              ))}
+              {recentFiles.map((doc) => (
+                <li key={doc.id}>
+                  <button
+                    type="button"
+                    onClick={() => selectDocument(doc.id)}
+                    className={clsx('nav-item', selectedDocId === doc.id && 'nav-item-active')}
+                  >
+                    <FileText className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                    <span className="min-w-0 flex-1 truncate">
+                      {doc.name}
+                      {(doc.status === 'processing' || doc.status === 'uploading') &&
+                      typeof doc.progress === 'number' ? (
+                        <span className="ml-1 text-[11px] text-[var(--color-ink-muted)]">
+                          ({Math.round(doc.progress)}%)
+                        </span>
+                      ) : doc.status !== 'ready' ? (
+                        <span className="ml-1 text-[11px] text-[var(--color-ink-muted)]">({doc.status})</span>
+                      ) : null}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <Link
             to="/files"
             className="mt-2 inline-flex items-center gap-1 px-2 text-xs font-medium text-[var(--color-accent)]"
@@ -329,10 +497,11 @@ export function WorkspacePage() {
         ref={fileRef}
         type="file"
         accept="application/pdf"
+        multiple
         className="hidden"
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) void onUpload(file);
+          const files = e.target.files;
+          if (files && files.length > 0) void onUpload(files);
           e.target.value = '';
         }}
       />
@@ -354,60 +523,114 @@ export function WorkspacePage() {
         </p>
       </div>
 
-      {!user?.hasOpenAIKey && (
+      {!user?.canChat && (
         <div className="notice-warn m-4 rounded-[var(--radius-control)] px-3 py-2.5 text-sm backdrop-blur-sm">
-          Add your OpenAI API key in{' '}
-          <Link className="font-medium text-[var(--color-accent)] underline" to="/settings">
-            Settings
-          </Link>{' '}
-          to upload and chat.
+          {!user?.hasOpenAIKey ? (
+            <>
+              Add your OpenAI key in{' '}
+              <Link
+                className="font-medium text-[var(--color-accent)] underline"
+                to="/settings#api-key"
+              >
+                Settings → AI
+              </Link>{' '}
+              to upload PDFs and chat.
+            </>
+          ) : (
+            <>
+              Your documents are ready. Finish chat setup in{' '}
+              <Link
+                className="font-medium text-[var(--color-accent)] underline"
+                to="/settings#api-key"
+              >
+                Settings → AI
+              </Link>
+              {user.chatProvider && user.chatProvider !== 'openai'
+                ? ` (add your ${
+                    user.chatProvider === 'anthropic'
+                      ? 'Claude'
+                      : user.chatProvider === 'google'
+                        ? 'Gemini'
+                        : user.chatProvider === 'xai'
+                          ? 'Grok'
+                          : 'custom'
+                  } key)`
+                : ''}
+              .
+            </>
+          )}
         </div>
       )}
 
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
-        {messages.length === 0 && (
-          <p className="text-sm text-[var(--color-ink-muted)]">
-            Ask anything about your uploaded PDFs. Knowra searches across your whole library.
-          </p>
-        )}
-        {messages.map((m) => {
-          const timeLabel = formatMessageTime(m.createdAt, timeFormat);
-          return (
-            <div key={m.id} className={clsx(m.role === 'user' ? 'text-right' : 'text-left')}>
-              <div
-                className={clsx(
-                  'inline-block max-w-[90%] whitespace-pre-wrap px-3.5 py-2.5 text-sm',
-                  m.role === 'user' ? 'bubble-user' : 'bubble-ai',
-                )}
-              >
-                <div className="mb-1 flex items-center justify-between gap-3 text-[11px] opacity-70">
-                  <span className="inline-flex items-center gap-1.5">
-                    {m.role === 'assistant' ? (
-                      <img
-                        src="/logo.png"
-                        alt=""
-                        className="size-3.5 rounded-[4px]"
-                        aria-hidden
-                      />
-                    ) : null}
-                    {m.role === 'user' ? 'You' : 'Knowra'}
-                  </span>
-                  {timeLabel ? (
-                    <time dateTime={m.createdAt} className="shrink-0 tabular-nums">
-                      {timeLabel}
-                    </time>
-                  ) : null}
+      {notice ? (
+        <div className="m-4 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-white/5 px-3 py-2.5 text-sm text-[var(--color-accent)]">
+          {notice}
+        </div>
+      ) : null}
+
+      {user?.deletionScheduledFor ? (
+        <div className="m-4 rounded-[var(--radius-control)] border border-[var(--color-danger)]/40 bg-[color-mix(in_oklab,var(--color-danger)_12%,transparent)] px-3 py-2.5 text-sm">
+          Account deletion is scheduled for{' '}
+          <strong>{new Date(user.deletionScheduledFor).toLocaleString()}</strong>.{' '}
+          <Link className="underline" to="/settings">
+            Cancel in Settings
+          </Link>{' '}
+          or sign in again before then to keep your account.
+        </div>
+      ) : null}
+
+      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4" aria-busy={messagesLoading}>
+        {messagesLoading ? (
+          <ChatMessagesSkeleton />
+        ) : (
+          <>
+            {messages.length === 0 && (
+              <p className="text-sm text-[var(--color-ink-muted)]">
+                Ask anything about your uploaded PDFs. Knowra searches across your whole library.
+              </p>
+            )}
+            {messages.map((m) => {
+              const timeLabel = formatMessageTime(m.createdAt, timeFormat);
+              return (
+                <div key={m.id} className={clsx(m.role === 'user' ? 'text-right' : 'text-left')}>
+                  <div
+                    className={clsx(
+                      'inline-block px-4 py-3 text-sm leading-relaxed',
+                      m.role === 'user'
+                        ? 'bubble-user max-w-[min(90%,28rem)] whitespace-pre-wrap'
+                        : 'bubble-ai max-w-[min(94%,40rem)]',
+                    )}
+                  >
+                    <div className="bubble-meta">
+                      <span className="inline-flex items-center gap-1.5">
+                        {m.role === 'assistant' ? (
+                          <img
+                            src="/logo.png"
+                            alt=""
+                            className="size-3.5 rounded-[4px]"
+                            aria-hidden
+                          />
+                        ) : null}
+                        {m.role === 'user' ? 'You' : 'Knowra'}
+                      </span>
+                      {timeLabel ? (
+                        <time dateTime={m.createdAt} className="shrink-0 tabular-nums">
+                          {timeLabel}
+                        </time>
+                      ) : null}
+                    </div>
+                    {m.role === 'assistant' ? <ChatMarkdown content={m.content} /> : m.content}
+                  </div>
                 </div>
-                {m.content}
-              </div>
-            </div>
-          );
-        })}
-        {busy && (
-          <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
-            <LoaderCircle className="icon animate-spin" aria-hidden />
-            Knowra is thinking…
-          </p>
+              );
+            })}
+            {busy && (
+              <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
+                <LoaderCircle className="icon animate-spin" aria-hidden />
+                Knowra is thinking…
+              </p>
+            )}
+          </>
         )}
         <div ref={bottomRef} />
       </div>
@@ -418,7 +641,7 @@ export function WorkspacePage() {
           <input
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            disabled={!user?.hasOpenAIKey || readyDocs.length === 0 || busy}
+            disabled={!user?.canChat || readyDocs.length === 0 || busy}
             placeholder={
               readyDocs.length > 0
                 ? 'Ask anything across your documents…'
@@ -428,7 +651,7 @@ export function WorkspacePage() {
           />
           <button
             type="submit"
-            disabled={!user?.hasOpenAIKey || readyDocs.length === 0 || busy || !question.trim()}
+            disabled={!user?.canChat || readyDocs.length === 0 || busy || !question.trim()}
             className="btn btn-primary"
           >
             <Send className="icon" aria-hidden />
@@ -522,7 +745,11 @@ export function WorkspacePage() {
             >
               <section className="surface flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
                 <div className="flex h-full min-h-0 w-full flex-1 flex-col">
-                  <PdfViewer documentId={selectedDoc.id} highlightPage={highlightPage} />
+                  <PdfViewer
+                    documentId={selectedDoc.id}
+                    highlightPage={highlightPage}
+                    onClose={closeDocumentView}
+                  />
                 </div>
               </section>
             </div>

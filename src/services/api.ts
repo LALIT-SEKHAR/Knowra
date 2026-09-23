@@ -1,3 +1,11 @@
+import { mimeFromFile } from '../utils/fileTypes';
+import {
+  humanizeStorageError,
+  MAX_UPLOAD_BYTES,
+  pdfPartRanges,
+  uploadTooLargeMessage,
+} from '../utils/uploadLimit';
+
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 const TOKEN_KEY = 'knowra_token';
 
@@ -84,7 +92,7 @@ function uploadWithProgress<T>(
 
       reject(
         new ApiError(
-          data.error?.message || 'Cloud storage upload failed',
+          humanizeStorageError(data.error?.message || 'Cloud storage upload failed'),
           xhr.status || 502,
         ),
       );
@@ -239,73 +247,117 @@ export const api = {
     file: File,
     options?: { onProgress?: (percent: number) => void },
   ) => {
-    if (file.type && file.type !== 'application/pdf') {
-      throw new ApiError('Only PDF files are supported', 400);
+    const mimeType = mimeFromFile(file);
+    if (!mimeType) {
+      throw new ApiError('Only PDF, Word, Excel, and image files are supported', 400);
+    }
+    if (file.size <= 0) {
+      throw new ApiError('This file is empty.', 400);
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      throw new ApiError(uploadTooLargeMessage(file.size), 400);
     }
 
     const onProgress = options?.onProgress;
     onProgress?.(0);
 
-    const { upload } = await request<{
-      upload: {
-        cloudName: string;
-        apiKey: string;
-        timestamp: number;
-        folder: string;
-        publicId: string;
-        signature: string;
-        resourceType: 'raw';
-      };
-    }>(`/documents/upload-signature?filename=${encodeURIComponent(file.name)}`);
+    const ranges = pdfPartRanges(file.size);
+    const uploaded: Array<{ publicId: string; url: string; bytes: number }> = [];
 
-    const form = new FormData();
-    form.append('file', file);
-    form.append('api_key', upload.apiKey);
-    form.append('timestamp', String(upload.timestamp));
-    form.append('signature', upload.signature);
-    form.append('folder', upload.folder);
-    form.append('public_id', upload.publicId);
+    try {
+      for (let part = 0; part < ranges.length; part += 1) {
+        const range = ranges[part]!;
+        const { upload } = await request<{
+          upload: {
+            cloudName: string;
+            apiKey: string;
+            timestamp: number;
+            folder: string;
+            publicId: string;
+            signature: string;
+            resourceType: 'raw';
+          };
+        }>(
+          `/documents/upload-signature?filename=${encodeURIComponent(file.name)}&part=${part}`,
+        );
 
-    const cloudData = await uploadWithProgress<{
-      error?: { message?: string };
-      public_id?: string;
-      secure_url?: string;
-      bytes?: number;
-    }>(
-      `https://api.cloudinary.com/v1_1/${upload.cloudName}/${upload.resourceType}/upload`,
-      form,
-      (loaded, total) => {
-        // Reserve the last few percent for document registration.
-        const pct = total > 0 ? Math.round((loaded / total) * 95) : 0;
-        onProgress?.(pct);
-      },
-    );
+        const form = new FormData();
+        form.append('file', file.slice(range.start, range.end), file.name);
+        form.append('api_key', upload.apiKey);
+        form.append('timestamp', String(upload.timestamp));
+        form.append('signature', upload.signature);
+        form.append('folder', upload.folder);
+        form.append('public_id', upload.publicId);
 
-    if (!cloudData.public_id || !cloudData.secure_url) {
-      throw new ApiError(
-        cloudData.error?.message || 'Cloud storage upload failed',
-        502,
-      );
+        const cloudData = await uploadWithProgress<{
+          error?: { message?: string };
+          public_id?: string;
+          secure_url?: string;
+          bytes?: number;
+        }>(
+          `https://api.cloudinary.com/v1_1/${upload.cloudName}/${upload.resourceType}/upload`,
+          form,
+          (loaded) => {
+            const sent = Math.min(file.size, range.start + loaded);
+            onProgress?.(Math.round((sent / file.size) * 95));
+          },
+        );
+
+        if (!cloudData.public_id || !cloudData.secure_url) {
+          throw new ApiError(
+            humanizeStorageError(cloudData.error?.message || 'Cloud storage upload failed'),
+            502,
+          );
+        }
+
+        uploaded.push({
+          publicId: cloudData.public_id,
+          url: cloudData.secure_url,
+          bytes: range.end - range.start,
+        });
+      }
+
+      onProgress?.(97);
+
+      const result = await request<{ document: import('../types').KnowraDocument }>('/documents', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: file.name,
+          size: file.size,
+          mimeType,
+          parts: uploaded.map((part) => ({
+            cloudinaryPublicId: part.publicId,
+            cloudinaryUrl: part.url,
+            bytes: part.bytes,
+          })),
+        }),
+      });
+
+      onProgress?.(100);
+      return result;
+    } catch (error) {
+      if (uploaded.length > 0) {
+        await request('/documents/upload-abort', {
+          method: 'POST',
+          body: JSON.stringify({ publicIds: uploaded.map((part) => part.publicId) }),
+        }).catch(() => undefined);
+      }
+      throw error;
     }
-
-    onProgress?.(97);
-
-    const result = await request<{ document: import('../types').KnowraDocument }>('/documents', {
-      method: 'POST',
-      body: JSON.stringify({
-        name: file.name,
-        size: cloudData.bytes ?? file.size,
-        mimeType: 'application/pdf',
-        cloudinaryPublicId: cloudData.public_id,
-        cloudinaryUrl: cloudData.secure_url,
-      }),
-    });
-
-    onProgress?.(100);
-    return result;
   },
 
-  /** Upload multiple PDFs sequentially with per-file progress. */
+  fetchDocumentFile: async (id: string) => {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set('Authorization', `Bearer ${token}`);
+    const res = await fetch(`${API_URL}/documents/${id}/file`, { headers }).catch(() => {
+      throw new ApiError('Could not download this file. Check your connection and try again.', 0);
+    });
+    if (!res.ok) throw new ApiError('Could not download this file', res.status);
+    return res.blob();
+  },
+
+  /** Upload multiple PDFs, Word, Excel, or image files sequentially with per-file progress. */
   uploadDocuments: async (
     files: File[],
     options?: {

@@ -140,7 +140,7 @@ export function DeleteAllFilesDialog({
         <p id={descriptionId} className="mt-2 text-sm leading-relaxed text-[var(--color-ink-muted)]">
           {step === 'confirm' ? (
             <>
-              This permanently deletes every uploaded PDF, its embeddings, and chats tied to those
+              This permanently deletes every uploaded file, its embeddings, and chats tied to those
               files. Library chats without a file stay. We’ll email a code to{' '}
               <strong className="text-[var(--color-ink)]">{email}</strong>.
             </>

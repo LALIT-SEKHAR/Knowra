@@ -18,11 +18,13 @@ import {
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import type { ChatMessage, Conversation, KnowraDocument } from '../types';
+import { DOCUMENT_ACCEPT, isOfficeMime, mimeFromFile } from '../utils/fileTypes';
 import { formatMessageTime, groupByRecency } from '../utils/format';
 import { usePreferences } from '../hooks/usePreferences';
 import { BrandMark } from './BrandMark';
 import { ChatMarkdown } from './ChatMarkdown';
 import { ConfirmDialog } from './ConfirmDialog';
+import { OfficePreview } from './OfficePreview';
 import { PdfViewer } from './PdfViewer';
 import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
 import { UserAvatar, displayName } from './UserAvatar';
@@ -196,15 +198,15 @@ export function WorkspacePage() {
     }
 
     const selected = Array.from(fileList);
-    const pdfs = selected.filter((f) => !f.type || f.type === 'application/pdf');
-    const skipped = selected.length - pdfs.length;
+    const accepted = selected.filter((file) => mimeFromFile(file));
+    const skipped = selected.length - accepted.length;
 
-    if (pdfs.length === 0) {
-      setError('Only PDF files are supported');
+    if (accepted.length === 0) {
+      setError('Only PDF, Word, Excel, and image files are supported');
       return;
     }
 
-    const batch = pdfs.map((file, index) => ({
+    const batch = accepted.map((file, index) => ({
       localId: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
       name: file.name,
       progress: 0,
@@ -257,7 +259,7 @@ export function WorkspacePage() {
     const okCount = results.length - failedCount;
     const notes: string[] = [];
     if (skipped > 0) {
-      notes.push(`${skipped} non-PDF file${skipped === 1 ? '' : 's'} skipped`);
+      notes.push(`${skipped} unsupported file${skipped === 1 ? '' : 's'} skipped`);
     }
     if (failedCount > 0 && okCount > 0) {
       notes.push(`${okCount} uploaded, ${failedCount} failed`);
@@ -287,7 +289,7 @@ export function WorkspacePage() {
       );      return;
     }
     if (readyDocs.length === 0) {
-      setError('Upload and process at least one PDF before chatting.');
+      setError('Upload and process at least one file before chatting.');
       return;
     }
     setBusy(true);
@@ -496,7 +498,7 @@ export function WorkspacePage() {
       <input
         ref={fileRef}
         type="file"
-        accept="application/pdf"
+        accept={DOCUMENT_ACCEPT}
         multiple
         className="hidden"
         onChange={(e) => {
@@ -518,7 +520,7 @@ export function WorkspacePage() {
         <p className="mt-0.5 text-xs text-[var(--color-ink-muted)]">
           {readyDocs.length > 0
             ? `Answers from all ${readyDocs.length} ready document${readyDocs.length === 1 ? '' : 's'}`
-            : 'Upload a PDF to start asking questions'}
+            : 'Upload a PDF, Word, Excel, or image file to start asking questions'}
           {selectedDoc ? ` · Viewing ${selectedDoc.name}` : ''}
         </p>
       </div>
@@ -534,7 +536,7 @@ export function WorkspacePage() {
               >
                 Settings → AI
               </Link>{' '}
-              to upload PDFs and chat.
+              to upload files and chat.
             </>
           ) : (
             <>
@@ -586,7 +588,7 @@ export function WorkspacePage() {
           <>
             {messages.length === 0 && (
               <p className="text-sm text-[var(--color-ink-muted)]">
-                Ask anything about your uploaded PDFs. Knowra searches across your whole library.
+                Ask anything about your uploaded files. Knowra searches across your whole library.
               </p>
             )}
             {messages.map((m) => {
@@ -645,7 +647,7 @@ export function WorkspacePage() {
             placeholder={
               readyDocs.length > 0
                 ? 'Ask anything across your documents…'
-                : 'Upload a ready PDF to start chatting…'
+                : 'Upload a ready file to start chatting…'
             }
             className="field flex-1"
           />
@@ -745,11 +747,21 @@ export function WorkspacePage() {
             >
               <section className="surface flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
                 <div className="flex h-full min-h-0 w-full flex-1 flex-col">
-                  <PdfViewer
-                    documentId={selectedDoc.id}
-                    highlightPage={highlightPage}
-                    onClose={closeDocumentView}
-                  />
+                  {isOfficeMime(selectedDoc.mimeType) ? (
+                    <OfficePreview
+                      documentId={selectedDoc.id}
+                      mimeType={selectedDoc.mimeType}
+                      highlightPage={highlightPage}
+                      onClose={closeDocumentView}
+                    />
+                  ) : (
+                    <PdfViewer
+                      documentId={selectedDoc.id}
+                      mimeType={selectedDoc.mimeType}
+                      highlightPage={highlightPage}
+                      onClose={closeDocumentView}
+                    />
+                  )}
                 </div>
               </section>
             </div>

@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import type { KnowraDocument } from '../types';
+import { DOCUMENT_ACCEPT, fileKindLabel, mimeFromFile } from '../utils/fileTypes';
 import { formatBytes, formatRelativeDate } from '../utils/format';
 import { useAuth } from '../hooks/useAuth';
 import { UserAvatar, displayName } from '../components/UserAvatar';
@@ -119,16 +120,16 @@ export function FilesPage() {
     }
 
     const selected = Array.from(fileList);
-    const pdfs = selected.filter((f) => !f.type || f.type === 'application/pdf');
-    const skipped = selected.length - pdfs.length;
+    const accepted = selected.filter((file) => mimeFromFile(file));
+    const skipped = selected.length - accepted.length;
 
-    if (pdfs.length === 0) {
-      setError('Only PDF files are supported');
+    if (accepted.length === 0) {
+      setError('Only PDF, Word, Excel, and image files are supported');
       if (fileRef.current) fileRef.current.value = '';
       return;
     }
 
-    const batch = pdfs.map((file, index) => ({
+    const batch = accepted.map((file, index) => ({
       localId: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
       name: file.name,
       size: file.size,
@@ -180,7 +181,7 @@ export function FilesPage() {
       const notes: string[] = [];
       if (skipped > 0) {
         notes.push(
-          `${skipped} non-PDF file${skipped === 1 ? '' : 's'} skipped`,
+          `${skipped} unsupported file${skipped === 1 ? '' : 's'} skipped`,
         );
       }
       if (failedCount > 0 && okCount > 0) {
@@ -196,6 +197,21 @@ export function FilesPage() {
 
   function dismissFailedUpload(localId: string) {
     setPendingUploads((prev) => prev.filter((u) => u.localId !== localId));
+  }
+
+  async function onDownload(doc: KnowraDocument) {
+    setOpenMenuId(null);
+    try {
+      const blob = await api.fetchDocumentFile(doc.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = doc.name;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Download failed');
+    }
   }
 
   async function onRename(doc: KnowraDocument) {
@@ -412,17 +428,15 @@ export function FilesPage() {
               <MessageSquare className="icon-sm" aria-hidden />
               Chat
             </Link>
-            <a
+            <button
+              type="button"
               role="menuitem"
               className="file-action-item"
-              href={doc.cloudinaryUrl}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => setOpenMenuId(null)}
+              onClick={() => void onDownload(doc)}
             >
               <Download className="icon-sm" aria-hidden />
               Download
-            </a>
+            </button>
             <button
               type="button"
               role="menuitem"
@@ -495,8 +509,8 @@ export function FilesPage() {
                 Files
               </h1>
               <p className="mt-1 text-[var(--color-ink-muted)]">
-                Manage your PDFs. Your OpenAI key is used to read scanned pages and make files
-                searchable.
+                Manage your PDFs, Word, Excel, and image files. Your OpenAI key reads scans and photos so you can
+                search them.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -542,7 +556,7 @@ export function FilesPage() {
               <input
                 ref={fileRef}
                 type="file"
-                accept="application/pdf"
+                accept={DOCUMENT_ACCEPT}
                 multiple
                 className="hidden"
                 onChange={(e) => {
@@ -565,7 +579,7 @@ export function FilesPage() {
               <FilesListSkeleton />
             ) : empty ? (
               <li className="px-4 py-8 text-sm text-[var(--color-ink-muted)]">
-                No files yet. Upload PDFs to get started.
+                No files yet. Upload a PDF, Word, Excel, or image file to get started.
               </li>
             ) : (
               <>
@@ -676,7 +690,7 @@ export function FilesPage() {
                 ) : empty ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-[var(--color-ink-muted)]">
-                      No files yet. Upload PDFs to get started.
+                      No files yet. Upload a PDF, Word, Excel, or image file to get started.
                     </td>
                   </tr>
                 ) : (
@@ -689,7 +703,7 @@ export function FilesPage() {
                             <span className="truncate">{upload.name}</span>
                           </span>
                         </td>
-                        <td className="px-4 py-3.5">PDF</td>
+                        <td className="px-4 py-3.5">{fileKindLabel(upload.name)}</td>
                         <td className="px-4 py-3.5">{formatBytes(upload.size)}</td>
                         <td
                           className={`px-4 py-3.5 ${upload.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
@@ -718,7 +732,7 @@ export function FilesPage() {
                             <span className="truncate">{doc.name}</span>
                           </span>
                         </td>
-                        <td className="px-4 py-3.5">PDF</td>
+                        <td className="px-4 py-3.5">{fileKindLabel(doc.mimeType)}</td>
                         <td className="px-4 py-3.5">{formatBytes(doc.size)}</td>
                         <td
                           className={`px-4 py-3.5 ${doc.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
@@ -744,7 +758,7 @@ export function FilesPage() {
         title="Delete file?"
         description={
           deleteTarget
-            ? `Delete “${deleteTarget.name}”? This removes the PDF, chats, and embeddings permanently.`
+            ? `Delete “${deleteTarget.name}”? This removes the file, chats, and embeddings permanently.`
             : ''
         }
         confirmLabel="Delete"

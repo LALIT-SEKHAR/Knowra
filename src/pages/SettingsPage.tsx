@@ -217,11 +217,12 @@ function providerHasKey(settings: AiSettings | null, provider: string): boolean 
 
 function providerChatReady(settings: AiSettings | null, provider: string): boolean {
   if (!settings?.hasOpenAIKey) return false;
-  if (provider === 'openai') return true;
-  if (provider === 'custom') {
+  const resolved = provider || 'openai';
+  if (resolved === 'openai') return true;
+  if (resolved === 'custom') {
     return Boolean(settings.customBaseUrl?.trim());
   }
-  return providerHasKey(settings, provider);
+  return providerHasKey(settings, resolved);
 }
 
 function draftProviderReady(
@@ -257,7 +258,7 @@ function chatReadiness(
     return {
       ready: false,
       title: 'OpenAI key required',
-      detail: 'Add it below to upload PDFs and make them searchable.',
+      detail: 'Add it below to upload PDFs, Word, Excel, and images and make them searchable.',
     };
   }
 
@@ -367,7 +368,7 @@ export function SettingsPage() {
     setChatProvider(next.chatProvider || 'openai');
     setChatModel(next.chatModel || 'gpt-4o-mini');
     setCustomBaseUrl(next.customBaseUrl || '');
-    if (next.chatProvider === 'custom') {
+    if ((next.chatProvider || 'openai') === 'custom') {
       setCustomModelInput(next.chatModel || 'gpt-4o-mini');
     }
   }
@@ -1277,7 +1278,7 @@ export function SettingsPage() {
                   <div className="settings-row">
                     <div className="settings-row-label">
                       <p>Delete all files</p>
-                      <p>Remove every PDF, embeddings, and file-linked chats.</p>
+                      <p>Remove every file, its search data, and file-linked chats.</p>
                     </div>
                     <div className="settings-row-action">
                       <button

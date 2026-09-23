@@ -4,7 +4,9 @@ import {
   ArrowLeft,
   Camera,
   ChevronRight,
+  Database,
   FileUp,
+  HardDrive,
   Hash,
   IdCard,
   ImageIcon,
@@ -29,6 +31,7 @@ import {
   totalTokens,
 } from '../components/UsageActivityGraph';
 import type { UsageSummary, UsageTotals } from '../types';
+import { formatBytes } from '../utils/format';
 import clsx from 'clsx';
 
 type ProfileSection = 'photo' | 'details' | 'usage';
@@ -91,6 +94,10 @@ function MetricCard({
       <p className="usage-metric-hint">{hint}</p>
     </div>
   );
+}
+
+function countLabel(count: number, singular: string, plural: string): string {
+  return `${formatUsageNumber(count)} ${count === 1 ? singular : plural}`;
 }
 
 function periodLabel(period: UsagePeriod): string {
@@ -278,27 +285,27 @@ export function ProfilePage() {
           Back to workspace
         </Link>
 
-        <header className="mt-5 flex flex-wrap items-end justify-between gap-4">
+        <header className="mt-4 flex flex-col gap-4 sm:mt-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="inline-flex items-center gap-2.5 font-[family-name:var(--font-display)] text-3xl tracking-tight">
+            <h1 className="inline-flex items-center gap-2.5 font-[family-name:var(--font-display)] text-2xl tracking-tight sm:text-3xl">
               <BrandMark size="sm" showWordmark={false} />
               Profile
             </h1>
             <p className="mt-1.5 text-sm text-[var(--color-ink-muted)]">
-              Your name, photo, and AI usage across Knowra.
+              Your name, photo, and AI usage.
             </p>
           </div>
 
           <Link
             to="/settings"
-            className="group inline-flex items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-white/[0.04] py-2 pr-2.5 pl-2.5 transition-colors hover:bg-white/[0.07]"
+            className="group inline-flex w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-white/[0.04] py-2.5 pr-2.5 pl-2.5 transition-colors hover:bg-white/[0.07] sm:w-auto"
           >
             <Settings
               className="size-4 shrink-0 text-[var(--color-ink-muted)]"
               strokeWidth={1.75}
               aria-hidden
             />
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="text-sm leading-tight text-[var(--color-ink)]">Settings</p>
               <p className="text-[11px] text-[var(--color-ink-muted)]">API key & account</p>
             </div>
@@ -517,44 +524,73 @@ export function ProfilePage() {
 
             {section === 'usage' && (
               <section className="usage-panel">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <h2 className="settings-section-title">AI usage</h2>
-                    <p className="settings-section-desc max-w-lg">
-                      Knowra runs on your API keys. These counters show how the app used them —
-                      uploads, OCR, embeddings, tokenization, and chat — so you can estimate cost.
-                    </p>
-                  </div>
-                  <div className="usage-period-tabs" role="tablist" aria-label="Usage period">
-                    {PERIODS.map(({ id, label }) => (
-                      <button
-                        key={id}
-                        type="button"
-                        role="tab"
-                        aria-selected={usagePeriod === id}
-                        className={clsx(
-                          'usage-period-tab',
-                          usagePeriod === id && 'usage-period-tab-active',
-                        )}
-                        onClick={() => setUsagePeriod(id)}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
                 {usageLoading ? (
-                  <div className="mt-8 flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
+                  <div className="mt-2 flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
                     <LoaderCircle className="icon-sm animate-spin" aria-hidden />
                     Loading usage…
                   </div>
                 ) : usageError ? (
-                  <div className="settings-flash settings-flash-error mt-6" role="alert">
+                  <div className="settings-flash settings-flash-error" role="alert">
                     {usageError}
                   </div>
                 ) : periodTotals && usage ? (
                   <>
+                    <div>
+                      <h2 className="settings-section-title">Storage</h2>
+                      <p className="settings-section-desc max-w-lg">
+                        Space your account is using right now. Uploaded files are the originals in
+                        cloud storage. Chunk records are the database documents created from those
+                        files for search, including their text and embeddings.
+                      </p>
+                      <div className="usage-metric-grid mt-6">
+                        <MetricCard
+                          icon={HardDrive}
+                          label="Uploaded files"
+                          value={formatBytes(usage.storage.fileBytes)}
+                          hint={`${countLabel(usage.storage.files, 'file', 'files')} in cloud storage`}
+                        />
+                        <MetricCard
+                          icon={Database}
+                          label="Chunk records"
+                          value={formatBytes(usage.storage.chunkBytes)}
+                          hint={`${countLabel(usage.storage.chunks, 'chunk document', 'chunk documents')} in the database`}
+                        />
+                        <MetricCard
+                          icon={Layers}
+                          label="Total stored"
+                          value={formatBytes(usage.storage.totalBytes)}
+                          hint="Cloud files plus chunk records"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-8 flex flex-wrap items-start justify-between gap-3 border-t border-[var(--color-line)] pt-6">
+                      <div>
+                        <h2 className="settings-section-title">AI usage</h2>
+                        <p className="settings-section-desc max-w-lg">
+                          Knowra runs on your API keys. These counters show how the app used them —
+                          uploads, OCR, embeddings, tokenization, and chat — so you can estimate cost.
+                        </p>
+                      </div>
+                      <div className="usage-period-tabs" role="tablist" aria-label="Usage period">
+                        {PERIODS.map(({ id, label }) => (
+                          <button
+                            key={id}
+                            type="button"
+                            role="tab"
+                            aria-selected={usagePeriod === id}
+                            className={clsx(
+                              'usage-period-tab',
+                              usagePeriod === id && 'usage-period-tab-active',
+                            )}
+                            onClick={() => setUsagePeriod(id)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     <div className="usage-metric-grid mt-6">
                       <MetricCard
                         icon={FileUp}
@@ -607,6 +643,13 @@ export function ProfilePage() {
                     <div className="settings-why mt-6">
                       <p className="settings-why-title">What these mean</p>
                       <ul className="settings-why-list">
+                        <li>
+                          <strong>Uploaded files</strong> — original file bytes kept in cloud storage.
+                        </li>
+                        <li>
+                          <strong>Chunk records</strong> — the stored size of each chunk document in
+                          the database, including its text, embedding, and fields.
+                        </li>
                         <li>
                           <strong>OCR</strong> — scanned PDF pages read with your OpenAI vision model.
                         </li>

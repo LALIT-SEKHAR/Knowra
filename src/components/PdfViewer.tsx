@@ -19,6 +19,7 @@ type Props = {
   documentId: string;
   mimeType?: string;
   highlightPage?: number | null;
+  label?: string;
   onClose?: () => void;
 };
 
@@ -32,7 +33,7 @@ function measureStageWidth(stage: HTMLElement) {
   return Math.min(640, Math.max(280, Math.floor(window.innerWidth * 0.42)));
 }
 
-export function PdfViewer({ documentId, mimeType, highlightPage, onClose }: Props) {
+export function PdfViewer({ documentId, mimeType, highlightPage, label, onClose }: Props) {
   const image = isImageMime(mimeType);
   if (!image) ensurePdfWorker();
 
@@ -148,19 +149,27 @@ export function PdfViewer({ documentId, mimeType, highlightPage, onClose }: Prop
   useEffect(() => {
     if (!numPages || !stageRef.current) return;
     const stage = stageRef.current;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const best = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
-        if (!best) return;
-        const page = Number((best.target as HTMLElement).dataset.page);
-        if (page) setPageNumber(page);
-      },
-      { root: stage, threshold: [0.2, 0.4, 0.6] },
-    );
+
+    const update = () => {
+      const stageTop = stage.getBoundingClientRect().top;
+      const marker = stageTop + Math.min(96, stage.clientHeight * 0.22);
+      let current = 0;
+      pageRefs.current.forEach((el, page) => {
+        const rect = el.getBoundingClientRect();
+        if (rect.top <= marker && rect.bottom > stageTop + 4) current = page;
+      });
+      if (current) setPageNumber((prev) => (prev === current ? prev : current));
+    };
+
+    update();
+    stage.addEventListener('scroll', update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(stage);
     pageRefs.current.forEach((el) => observer.observe(el));
-    return () => observer.disconnect();
+    return () => {
+      stage.removeEventListener('scroll', update);
+      observer.disconnect();
+    };
   }, [numPages, pageWidth]);
 
   function goToPage(next: number) {
@@ -171,12 +180,12 @@ export function PdfViewer({ documentId, mimeType, highlightPage, onClose }: Prop
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col">
-      <div className="chrome-bar flex shrink-0 items-center justify-between gap-2 border-b border-[var(--color-line)] px-3 py-2.5 text-sm">
-        <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-[var(--color-ink-muted)]">
+      <div className="chrome-bar flex shrink-0 flex-wrap items-center gap-x-2 gap-y-2 border-b border-[var(--color-line)] px-3 py-2 text-sm">
+        <span className="inline-flex min-w-0 flex-1 basis-36 items-center gap-1.5 font-medium text-[var(--color-ink-muted)]">
           <FileText className="icon shrink-0" aria-hidden />
-          {image ? 'Image' : 'Document'}
+          <span className="truncate text-[var(--color-ink)]">{label ?? (image ? 'Image' : 'Document')}</span>
         </span>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {numPages > 0 && (
             <>
               <button
@@ -188,7 +197,7 @@ export function PdfViewer({ documentId, mimeType, highlightPage, onClose }: Prop
               >
                 <ChevronLeft className="icon" aria-hidden />
               </button>
-              <span className="min-w-[4.5rem] text-center tabular-nums text-[var(--color-ink-muted)]">
+              <span className="min-w-12 text-center text-xs tabular-nums text-[var(--color-ink-muted)]">
                 {pageNumber} / {numPages}
               </span>
               <button

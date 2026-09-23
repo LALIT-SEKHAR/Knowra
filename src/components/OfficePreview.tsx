@@ -1,19 +1,30 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { ChevronLeft, ChevronRight, FileText, X } from 'lucide-react';
 import { getToken } from '../services/api';
 import { isExcelMime } from '../utils/fileTypes';
+import { sanitizePreviewHtml } from '../utils/previewHtml';
+import { DocxPreview } from './DocxPreview';
 import { PdfStageSkeleton } from './Skeleton';
 
-type PreviewPage = { pageNumber: number; text: string };
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+type PreviewPage = { pageNumber: number; html: string };
 
 type Props = {
   documentId: string;
   mimeType?: string;
   highlightPage?: number | null;
+  label?: string;
   onClose?: () => void;
 };
 
-export function OfficePreview({ documentId, mimeType, highlightPage, onClose }: Props) {
+export function OfficePreview(props: Props) {
+  if (props.mimeType === DOCX_MIME) return <DocxPreview {...props} />;
+  return <OfficeHtmlPreview {...props} />;
+}
+
+function OfficeHtmlPreview({ documentId, mimeType, highlightPage, label, onClose }: Props) {
   const sheet = isExcelMime(mimeType);
   const [pages, setPages] = useState<PreviewPage[]>([]);
   const [pageNumber, setPageNumber] = useState(1);
@@ -44,13 +55,28 @@ export function OfficePreview({ documentId, mimeType, highlightPage, onClose }: 
         });
         const data = (await res.json().catch(() => ({}))) as {
           error?: string;
-          pages?: PreviewPage[];
+          pages?: Array<{ pageNumber: number; html?: string; text?: string }>;
           tooLarge?: boolean;
         };
         if (!res.ok) throw new Error(data.error || `Failed to load file (${res.status})`);
         if (cancelled) return;
         setTooLarge(Boolean(data.tooLarge));
-        setPages(data.pages ?? []);
+        setPages(
+          (data.pages ?? [])
+            .map((page) => ({
+              pageNumber: page.pageNumber,
+              html:
+                page.html ||
+                (page.text
+                  ? `<p>${page.text
+                      .replace(/&/g, '&amp;')
+                      .replace(/</g, '&lt;')
+                      .replace(/>/g, '&gt;')
+                      .replace(/\n/g, '<br>')}</p>`
+                  : ''),
+            }))
+            .filter((page) => page.html),
+        );
         const first = data.pages?.[0]?.pageNumber ?? 1;
         const preferred = highlightRef.current;
         setPageNumber(preferred && preferred > 0 ? preferred : first);
@@ -69,6 +95,10 @@ export function OfficePreview({ documentId, mimeType, highlightPage, onClose }: 
 
   const current = pages.find((page) => page.pageNumber === pageNumber) ?? pages[0];
   const index = current ? pages.findIndex((page) => page.pageNumber === current.pageNumber) : -1;
+  const html = useMemo(
+    () => (current?.html ? sanitizePreviewHtml(current.html) : ''),
+    [current?.html],
+  );
 
   function showIndex(next: number) {
     const page = pages[next];
@@ -77,12 +107,14 @@ export function OfficePreview({ documentId, mimeType, highlightPage, onClose }: 
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="chrome-bar flex shrink-0 items-center justify-between gap-2 border-b border-[var(--color-line)] px-3 py-2.5 text-sm">
-        <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-[var(--color-ink-muted)]">
+      <div className="chrome-bar flex shrink-0 flex-wrap items-center gap-x-2 gap-y-2 border-b border-[var(--color-line)] px-3 py-2 text-sm">
+        <span className="inline-flex min-w-0 flex-1 basis-36 items-center gap-1.5 font-medium text-[var(--color-ink-muted)]">
           <FileText className="icon shrink-0" aria-hidden />
-          {sheet ? 'Spreadsheet' : 'Document'}
+          <span className="truncate text-[var(--color-ink)]">
+            {label ?? (sheet ? 'Spreadsheet' : 'Document')}
+          </span>
         </span>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {pages.length > 1 && current && (
             <>
               <button
@@ -94,7 +126,7 @@ export function OfficePreview({ documentId, mimeType, highlightPage, onClose }: 
               >
                 <ChevronLeft className="icon" aria-hidden />
               </button>
-              <span className="min-w-[4.5rem] text-center tabular-nums text-[var(--color-ink-muted)]">
+              <span className="min-w-12 text-center text-xs tabular-nums text-[var(--color-ink-muted)]">
                 {index + 1} / {pages.length}
               </span>
               <button
@@ -120,7 +152,7 @@ export function OfficePreview({ documentId, mimeType, highlightPage, onClose }: 
           )}
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+      <div className="pdf-stage min-h-0 flex-1 overflow-auto p-4 sm:p-6">
         {error ? (
           <p className="text-sm text-[var(--color-danger)]">{error}</p>
         ) : loading ? (
@@ -130,12 +162,18 @@ export function OfficePreview({ documentId, mimeType, highlightPage, onClose }: 
             This file is too large to preview here. Download it to open the original. You can still
             ask questions about it in chat.
           </p>
-        ) : !current ? (
+        ) : !html ? (
           <p className="text-sm text-[var(--color-ink-muted)]">No readable text in this file.</p>
         ) : (
-          <article className="mx-auto max-w-3xl whitespace-pre-wrap text-sm leading-relaxed text-[var(--color-ink)]">
-            {current.text}
-          </article>
+          <article
+            className={clsx(
+              'doc-preview mx-auto bg-white px-4 py-6 shadow-[0_16px_40px_-24px_rgba(0,0,0,0.8)] ring-1 ring-white/10 sm:px-10 sm:py-10',
+              sheet
+                ? 'w-max min-w-[min(100%,42rem)] max-w-none rounded-[var(--radius-control)]'
+                : 'max-w-3xl rounded-[var(--radius-control)]',
+            )}
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
         )}
       </div>
     </div>

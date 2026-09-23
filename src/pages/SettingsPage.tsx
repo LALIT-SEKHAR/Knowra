@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
-import { usePreferences, type TimeFormat } from '../hooks/usePreferences';
+import { usePreferences, type ThemePreference, type TimeFormat } from '../hooks/usePreferences';
 import { UserAvatar, displayName } from '../components/UserAvatar';
 import { BrandMark } from '../components/BrandMark';
 import { ConfirmDialog } from '../components/ConfirmDialog';
@@ -310,10 +310,26 @@ function chatReadiness(
   };
 }
 
+function filesDeletedMessage(
+  deletedDocuments: number,
+  deletedFolders: number,
+  deleteFolders: boolean,
+): string {
+  if (deletedDocuments === 0 && (!deleteFolders || deletedFolders === 0)) {
+    return deleteFolders ? 'No files or folders to delete.' : 'No files to delete.';
+  }
+  const fileLabel = `${deletedDocuments} file${deletedDocuments === 1 ? '' : 's'}`;
+  if (!deleteFolders) return `Deleted ${fileLabel}. Folders were kept.`;
+  if (deletedFolders === 0) return `Deleted ${fileLabel}.`;
+  const folderLabel = `${deletedFolders} folder${deletedFolders === 1 ? '' : 's'}`;
+  if (deletedDocuments === 0) return `Deleted ${folderLabel}.`;
+  return `Deleted ${fileLabel} and ${folderLabel}.`;
+}
+
 export function SettingsPage() {
   const navigate = useNavigate();
   const { user, refreshUser, logout } = useAuth();
-  const { timeFormat, setTimeFormat } = usePreferences();
+  const { timeFormat, setTimeFormat, theme, resolvedTheme, setTheme } = usePreferences();
   const [section, setSection] = useState<SettingsSection>(sectionFromHash);
   const [apiKey, setApiKey] = useState('');
   const [settings, setSettings] = useState<AiSettings | null>(null);
@@ -333,7 +349,7 @@ export function SettingsPage() {
   const [pendingProviderDelete, setPendingProviderDelete] = useState<ProviderKeyId | null>(null);
   const [deleteFilesOpen, setDeleteFilesOpen] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
-  const [timeFormatSaved, setTimeFormatSaved] = useState('');
+  const [preferenceSaved, setPreferenceSaved] = useState('');
 
   const activeProvider = useMemo(
     () => chatProviders.find((p) => p.id === chatProvider) ?? chatProviders[0],
@@ -378,19 +394,30 @@ export function SettingsPage() {
     window.history.replaceState(null, '', `#${id}`);
     setMessage('');
     setError('');
-    setTimeFormatSaved('');
+    setPreferenceSaved('');
   }
 
   function onTimeFormatChange(format: TimeFormat) {
     setTimeFormat(format);
-    setTimeFormatSaved(
+    setPreferenceSaved(
       format === '12h' ? 'Using 12-hour time with AM/PM.' : 'Using 24-hour time.',
+    );
+  }
+
+  function onThemeChange(next: ThemePreference) {
+    setTheme(next);
+    const label = next === 'system' ? 'system' : next;
+    setPreferenceSaved(
+      next === 'system'
+        ? `Appearance follows this device.`
+        : `Using ${label} appearance.`,
     );
   }
 
   function resetPreferences() {
     setTimeFormat('12h');
-    setTimeFormatSaved('Preferences reset to defaults.');
+    setTheme('system');
+    setPreferenceSaved('Preferences reset to defaults.');
     setMessage('');
     setError('');
   }
@@ -667,23 +694,23 @@ export function SettingsPage() {
           Back to workspace
         </Link>
 
-        <header className="mt-5 flex flex-wrap items-end justify-between gap-4">
+        <header className="mt-4 flex flex-col gap-4 sm:mt-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="inline-flex items-center gap-2.5 font-[family-name:var(--font-display)] text-3xl tracking-tight">
+            <h1 className="inline-flex items-center gap-2.5 font-[family-name:var(--font-display)] text-2xl tracking-tight sm:text-3xl">
               <BrandMark size="sm" showWordmark={false} />
               Settings
             </h1>
             <p className="mt-1.5 text-sm text-[var(--color-ink-muted)]">
-              Manage preferences, AI setup, and account data.
+              Preferences, AI setup, and account data.
             </p>
           </div>
 
           <Link
             to="/profile"
-            className="group inline-flex items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-white/[0.04] py-2 pr-2.5 pl-2 transition-colors hover:bg-white/[0.07]"
+            className="group inline-flex w-full items-center gap-2.5 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-white/[0.04] py-2.5 pr-2.5 pl-2 transition-colors hover:bg-white/[0.07] sm:w-auto"
           >
             <UserAvatar user={user} size="sm" />
-            <div className="min-w-0 max-w-[10.5rem]">
+            <div className="min-w-0 flex-1 sm:max-w-[10.5rem] sm:flex-none">
               <p className="truncate text-sm leading-tight text-[var(--color-ink)]">
                 {displayName(user)}
               </p>
@@ -730,11 +757,45 @@ export function SettingsPage() {
               <section>
                 <h2 className="settings-section-title">Preferences</h2>
                 <p className="settings-section-desc">
-                  Choose how chat timestamps appear across Knowra.
+                  Choose appearance and how chat timestamps appear across Knowra.
                 </p>
 
                 <div className="mt-6">
                   <div className="settings-row !border-t-0 !pt-0">
+                    <div className="settings-row-label">
+                      <p>Appearance</p>
+                      <p>
+                        {theme === 'system'
+                          ? `Follows this device (${resolvedTheme} right now).`
+                          : theme === 'light'
+                            ? 'Light appearance across Knowra.'
+                            : 'Dark appearance across Knowra.'}
+                      </p>
+                    </div>
+                    <div className="settings-row-action">
+                      <div className="segmented" role="group" aria-label="Appearance">
+                        {(
+                          [
+                            ['system', 'System'],
+                            ['light', 'Light'],
+                            ['dark', 'Dark'],
+                          ] as const
+                        ).map(([id, label]) => (
+                          <button
+                            key={id}
+                            type="button"
+                            className={clsx('segmented-btn', theme === id && 'segmented-btn-active')}
+                            aria-pressed={theme === id}
+                            onClick={() => onThemeChange(id)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="settings-row">
                     <div className="settings-row-label">
                       <p>Time format</p>
                       <p>
@@ -779,7 +840,7 @@ export function SettingsPage() {
                   <div className="settings-row">
                     <div className="settings-row-label">
                       <p>Reset preferences</p>
-                      <p>Restore time format to the default (12-hour).</p>
+                      <p>Restore appearance to system and time format to 12-hour.</p>
                     </div>
                     <div className="settings-row-action">
                       <button
@@ -794,8 +855,8 @@ export function SettingsPage() {
                   </div>
                 </div>
 
-                {timeFormatSaved ? (
-                  <p className="mt-4 text-sm text-[var(--color-accent)]">{timeFormatSaved}</p>
+                {preferenceSaved ? (
+                  <p className="mt-4 text-sm text-[var(--color-accent)]">{preferenceSaved}</p>
                 ) : null}
               </section>
             )}
@@ -1278,7 +1339,10 @@ export function SettingsPage() {
                   <div className="settings-row">
                     <div className="settings-row-label">
                       <p>Delete all files</p>
-                      <p>Remove every file, its search data, and file-linked chats.</p>
+                      <p>
+                        Remove every file, including files in nested folders, plus search data and
+                        file-linked chats.
+                      </p>
                     </div>
                     <div className="settings-row-action">
                       <button
@@ -1423,17 +1487,13 @@ export function SettingsPage() {
             resendAvailableAt: result.resendAvailableAt,
           };
         }}
-        onConfirmDelete={async (code) => {
+        onConfirmDelete={async (code, deleteFolders) => {
           setBusy(true);
           setError('');
           try {
-            const res = await api.deleteAllFiles(code);
+            const res = await api.deleteAllFiles(code, deleteFolders);
             setDeleteFilesOpen(false);
-            setMessage(
-              res.deletedDocuments === 0
-                ? 'No files to delete.'
-                : `Deleted ${res.deletedDocuments} file${res.deletedDocuments === 1 ? '' : 's'}.`,
-            );
+            setMessage(filesDeletedMessage(res.deletedDocuments, res.deletedFolders, deleteFolders));
           } finally {
             setBusy(false);
           }

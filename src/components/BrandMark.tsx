@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { KnowraMark } from './KnowraMark';
 
 type BrandMarkProps = {
   className?: string;
@@ -37,13 +38,8 @@ export function BrandMark({
         className,
       )}
     >
-      <img
-        src="/logo.png"
-        alt=""
-        width={56}
-        height={56}
-        className={clsx(sizeMap[size], 'shrink-0 rounded-[22%] shadow-[0_8px_24px_-12px_rgba(0,0,0,0.55)]')}
-        aria-hidden={showWordmark}
+      <KnowraMark
+        className={clsx(sizeMap[size], 'shrink-0 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.55)]')}
       />
       {showWordmark ? (
         <div className={clsx(stacked && 'pl-0.5')}>

@@ -63,12 +63,30 @@ export type DocumentStage =
   | 'indexing'
   | 'finishing';
 
+export type FolderPathSegment = {
+  id: string;
+  name: string;
+};
+
+export type KnowraFolder = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Ancestor folders, set on search results. */
+  path?: FolderPathSegment[];
+};
+
 export type KnowraDocument = {
   id: string;
   name: string;
   mimeType: string;
   size: number;
   cloudinaryUrl: string;
+  folderId?: string | null;
+  /** Folder that contains this file, set on search results. */
+  path?: FolderPathSegment[];
   status: DocumentStatus;
   errorMessage?: string | null;
   pageCount?: number | null;
@@ -93,6 +111,8 @@ export type Conversation = {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Excerpt from a matching message, set on search results. */
+  snippet?: string;
 };
 
 export type ChatMessage = {
@@ -121,7 +141,16 @@ export type UsageDay = UsageTotals & {
   score: number;
 };
 
+export type StorageUsage = {
+  files: number;
+  fileBytes: number;
+  chunks: number;
+  chunkBytes: number;
+  totalBytes: number;
+};
+
 export type UsageSummary = {
+  storage: StorageUsage;
   totals: UsageTotals;
   periods: {
     day: UsageTotals;

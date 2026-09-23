@@ -13,7 +13,7 @@ type Props = {
   busy: boolean;
   onCancel: () => void;
   onRequestCode: () => Promise<OtpTiming>;
-  onConfirmDelete: (code: string) => Promise<void>;
+  onConfirmDelete: (code: string, deleteFolders: boolean) => Promise<void>;
 };
 
 function formatCountdown(totalSeconds: number): string {
@@ -40,6 +40,7 @@ export function DeleteAllFilesDialog({
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [resendAvailableAt, setResendAvailableAt] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const [deleteFolders, setDeleteFolders] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -49,6 +50,7 @@ export function DeleteAllFilesDialog({
       setSending(false);
       setExpiresAt(null);
       setResendAvailableAt(null);
+      setDeleteFolders(false);
       return;
     }
 
@@ -118,7 +120,7 @@ export function DeleteAllFilesDialog({
     }
     setLocalError('');
     try {
-      await onConfirmDelete(trimmed);
+      await onConfirmDelete(trimmed, deleteFolders);
     } catch (err) {
       setLocalError(err instanceof Error ? err.message : 'Failed to delete files');
     }
@@ -140,17 +142,40 @@ export function DeleteAllFilesDialog({
         <p id={descriptionId} className="mt-2 text-sm leading-relaxed text-[var(--color-ink-muted)]">
           {step === 'confirm' ? (
             <>
-              This permanently deletes every uploaded file, its embeddings, and chats tied to those
-              files. Library chats without a file stay. We’ll email a code to{' '}
+              This permanently deletes every uploaded file, including files inside folders and nested
+              folders, along with their embeddings and chats tied to those files. Library chats
+              without a file stay. We’ll email a code to{' '}
               <strong className="text-[var(--color-ink)]">{email}</strong>.
             </>
           ) : (
             <>
               Enter the 6-digit code sent to <strong className="text-[var(--color-ink)]">{email}</strong>.
-              Files will be deleted immediately after verification.
+              {deleteFolders
+                ? ' Files and folders will be deleted immediately after verification.'
+                : ' Files will be deleted immediately. Your folders will be kept.'}
             </>
           )}
         </p>
+
+        {step === 'confirm' ? (
+          <label className="confirm-option">
+            <input
+              type="checkbox"
+              checked={deleteFolders}
+              disabled={locked}
+              onChange={(e) => setDeleteFolders(e.target.checked)}
+            />
+            <span>
+              <span className="block text-sm font-medium text-[var(--color-ink)]">
+                Also delete folders
+              </span>
+              <span className="mt-0.5 block text-[13px] leading-relaxed text-[var(--color-ink-muted)]">
+                Removes every folder, including nested ones. Leave this off to keep your folder
+                structure.
+              </span>
+            </span>
+          </label>
+        ) : null}
 
         {step === 'otp' ? (
           <>
@@ -239,7 +264,7 @@ export function DeleteAllFilesDialog({
                     Deleting…
                   </>
                 ) : (
-                  'Delete all files'
+                  deleteFolders ? 'Delete files and folders' : 'Delete all files'
                 )}
               </button>
             </>

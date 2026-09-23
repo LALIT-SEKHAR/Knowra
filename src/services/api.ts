@@ -201,10 +201,10 @@ export const api = {
       resendAvailableAt: string;
     }>('/settings/files/request-otp', { method: 'POST' }),
 
-  deleteAllFiles: (code: string) =>
-    request<{ ok: boolean; deletedDocuments: number }>('/settings/files', {
+  deleteAllFiles: (code: string, deleteFolders = false) =>
+    request<{ ok: boolean; deletedDocuments: number; deletedFolders: number }>('/settings/files', {
       method: 'DELETE',
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, deleteFolders }),
     }),
 
   requestDeleteAccountOtp: () =>
@@ -235,9 +235,43 @@ export const api = {
       { method: 'POST' },
     ),
 
-  listDocuments: (q?: string) =>
-    request<{ documents: import('../types').KnowraDocument[] }>(
-      `/documents${q ? `?q=${encodeURIComponent(q)}` : ''}`,
+  listDocuments: (q?: string, folder?: string) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (folder) params.set('folder', folder);
+    const qs = params.toString();
+    return request<{
+      documents: import('../types').KnowraDocument[];
+      folders?: import('../types').KnowraFolder[];
+      breadcrumb?: import('../types').FolderPathSegment[];
+    }>(`/documents${qs ? `?${qs}` : ''}`);
+  },
+
+  listFolders: () =>
+    request<{ folders: import('../types').KnowraFolder[] }>('/documents/folders'),
+
+  createFolder: (name: string, parentId?: string | null) =>
+    request<{ folder: import('../types').KnowraFolder }>('/documents/folders', {
+      method: 'POST',
+      body: JSON.stringify({ name, parentId: parentId ?? null }),
+    }),
+
+  ensureFolderPath: (segments: string[], parentId?: string | null) =>
+    request<{ folder: import('../types').KnowraFolder }>('/documents/folders/ensure', {
+      method: 'POST',
+      body: JSON.stringify({ segments, parentId: parentId ?? null }),
+    }),
+
+  updateFolder: (id: string, body: { name?: string; parentId?: string | null }) =>
+    request<{ folder: import('../types').KnowraFolder }>(`/documents/folders/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  deleteFolder: (id: string) =>
+    request<{ ok: boolean; deletedFolders: number; deletedDocuments: number }>(
+      `/documents/folders/${id}`,
+      { method: 'DELETE' },
     ),
 
   getDocument: (id: string) =>
@@ -245,7 +279,7 @@ export const api = {
 
   uploadDocument: async (
     file: File,
-    options?: { onProgress?: (percent: number) => void },
+    options?: { onProgress?: (percent: number) => void; folderId?: string | null },
   ) => {
     const mimeType = mimeFromFile(file);
     if (!mimeType) {
@@ -325,6 +359,7 @@ export const api = {
           name: file.name,
           size: file.size,
           mimeType,
+          ...(options?.folderId ? { folderId: options.folderId } : {}),
           parts: uploaded.map((part) => ({
             cloudinaryPublicId: part.publicId,
             cloudinaryUrl: part.url,
@@ -361,6 +396,9 @@ export const api = {
   uploadDocuments: async (
     files: File[],
     options?: {
+      folderId?: string | null;
+      /** Per-file destination. Falls back to folderId when an entry is missing. */
+      folderIds?: Array<string | null | undefined>;
       onFileStart?: (file: File, index: number) => void;
       onFileProgress?: (file: File, index: number, percent: number) => void;
       onFileComplete?: (
@@ -382,6 +420,7 @@ export const api = {
       options?.onFileStart?.(file, i);
       try {
         const res = await api.uploadDocument(file, {
+          folderId: options?.folderIds?.[i] ?? options?.folderId,
           onProgress: (percent) => options?.onFileProgress?.(file, i, percent),
         });
         options?.onFileComplete?.(file, i, res);
@@ -399,6 +438,12 @@ export const api = {
     request<{ document: import('../types').KnowraDocument }>(`/documents/${id}`, {
       method: 'PATCH',
       body: JSON.stringify({ name }),
+    }),
+
+  moveDocument: (id: string, folderId: string | null) =>
+    request<{ document: import('../types').KnowraDocument }>(`/documents/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ folderId }),
     }),
 
   deleteDocument: (id: string) =>
@@ -430,8 +475,11 @@ export const api = {
       body: JSON.stringify({ question, conversationId }),
     }),
 
-  listConversations: () =>
-    request<{ conversations: import('../types').Conversation[] }>('/conversations'),
+  listConversations: (q?: string) => {
+    const query = q?.trim();
+    const path = query ? `/conversations?q=${encodeURIComponent(query)}` : '/conversations';
+    return request<{ conversations: import('../types').Conversation[] }>(path);
+  },
 
   getConversation: (id: string) =>
     request<{

@@ -101,6 +101,23 @@ export function FilesTableSkeleton({ rows = 6 }: { rows?: number }) {
   );
 }
 
+export function FilesGridSkeleton({ cards = 8 }: { cards?: number }) {
+  return (
+    <div className="grid grid-cols-2 gap-3 p-3 sm:grid-cols-3 lg:grid-cols-4">
+      {Array.from({ length: cards }, (_, i) => (
+        <div
+          key={i}
+          className="rounded-[var(--radius-control)] border border-[var(--color-line)] p-3"
+        >
+          <Skeleton className="size-7" />
+          <Skeleton className="mt-4 h-4 w-3/4" />
+          <Skeleton className="mt-2 h-3 w-1/2" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function FilesListSkeleton({ rows = 6 }: { rows?: number }) {
   return (
     <>

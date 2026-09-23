@@ -119,7 +119,7 @@ export function AuthPage() {
   }
 
   return (
-    <div className="page-shell relative flex min-h-full items-center justify-center">
+    <div className="page-shell relative flex min-h-full items-start justify-center sm:items-center">
       <div
         className="ambient-orb left-[5%] top-[8%] bg-white/12"
         aria-hidden
@@ -131,9 +131,9 @@ export function AuthPage() {
       />
 
       <div className="relative z-10 w-full max-w-md">
-        <BrandMark size="xl" tagline stacked />
+        <BrandMark size="lg" tagline stacked />
 
-        <div className="glass mt-10 p-6 sm:p-7">
+        <div className="glass mt-8 p-5 sm:mt-10 sm:p-7">
           <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
           <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
             Passwordless email OTP — no password needed.

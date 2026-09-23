@@ -1,36 +1,136 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type UIEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
-  ArrowRight,
+  Check,
   ChevronDown,
+  Copy,
   FileText,
   Files,
-  LoaderCircle,
   LogOut,
   Menu,
   MessageSquare,
   MessageSquarePlus,
+  Search,
   Send,
+  Share2,
   Settings,
-  Upload,
   UserRound,
+  X,
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import type { ChatMessage, Conversation, KnowraDocument } from '../types';
-import { DOCUMENT_ACCEPT, isOfficeMime, mimeFromFile } from '../utils/fileTypes';
+import { isOfficeMime } from '../utils/fileTypes';
 import { formatMessageTime, groupByRecency } from '../utils/format';
-import { describeProcessing, describeUpload, isActiveDocument, useActivityClock } from '../utils/fileActivity';
+import { describeProcessing, isActiveDocument, useActivityClock } from '../utils/fileActivity';
 import { usePreferences } from '../hooks/usePreferences';
 import { BrandMark } from './BrandMark';
+import { KnowraMark } from './KnowraMark';
 import { ChatMarkdown } from './ChatMarkdown';
 import { ConfirmDialog } from './ConfirmDialog';
+import { ShareResponseDialog } from './ShareResponseDialog';
 import { FileActivity } from './FileActivity';
 import { OfficePreview } from './OfficePreview';
 import { PdfViewer } from './PdfViewer';
 import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
+import { LiveReply } from './ThinkingIndicator';
 import { UserAvatar, displayName } from './UserAvatar';
+import { copyRenderedMessage } from '../utils/copyResponse';
+
+const CHAT_PAGE_SIZE = 20;
+
+function useBriefStatus() {
+  const [status, setStatus] = useState('');
+  const resetRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+    };
+  }, []);
+
+  function show(next: string) {
+    setStatus(next);
+    if (resetRef.current !== null) window.clearTimeout(resetRef.current);
+    resetRef.current = window.setTimeout(() => setStatus(''), 1600);
+  }
+
+  return [status, show] as const;
+}
+
+function CopyResponseButton() {
+  const [status, showStatus] = useBriefStatus();
+
+  async function onCopy(event: MouseEvent<HTMLButtonElement>) {
+    const node = event.currentTarget.closest('[data-response]')?.querySelector('.chat-md');
+    if (!(node instanceof HTMLElement)) return;
+    try {
+      await copyRenderedMessage(node);
+    } catch {
+      return;
+    }
+    showStatus('Copied');
+  }
+
+  const label = status || 'copy response';
+
+  return (
+    <button
+      type="button"
+      className="bubble-action"
+      data-tooltip={label}
+      onClick={(event) => void onCopy(event)}
+      aria-label={label}
+    >
+      {status ? <Check className="icon-sm" aria-hidden /> : <Copy className="icon-sm" aria-hidden />}
+      <span className="sr-only" aria-live="polite">
+        {status}
+      </span>
+    </button>
+  );
+}
+
+function EllipsisText({ text, className }: { text: string; className?: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    function measure() {
+      const node = ref.current;
+      if (!node) return;
+      setOverflowing(node.scrollWidth > node.clientWidth + 1);
+    }
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text]);
+
+  return (
+    <span ref={ref} className={className} title={overflowing ? text : undefined}>
+      {text}
+    </span>
+  );
+}
+
+function ShareResponseButton({ onShare }: { onShare: () => void }) {
+  return (
+    <button
+      type="button"
+      className="bubble-action"
+      data-tooltip="share response"
+      onClick={onShare}
+      aria-label="share response"
+    >
+      <Share2 className="icon-sm" aria-hidden />
+    </button>
+  );
+}
 
 export function WorkspacePage() {
   const { user, logout } = useAuth();
@@ -53,23 +153,29 @@ export function WorkspacePage() {
   const [error, setError] = useState('');
   const [highlightPage, setHighlightPage] = useState<number | null>(null);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [shareText, setShareText] = useState<string | null>(null);
+  const closeShare = useCallback(() => setShareText(null), []);
   const [logoutBusy, setLogoutBusy] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
-  const [pendingUploads, setPendingUploads] = useState<
-    Array<{
-      localId: string;
-      name: string;
-      size: number;
-      progress: number;
-      status: 'queued' | 'uploading' | 'failed';
-      startedAt?: number;
-      errorMessage?: string;
-    }>
-  >([]);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [visibleChatCount, setVisibleChatCount] = useState(CHAT_PAGE_SIZE);
+  const [chatQuery, setChatQuery] = useState('');
+  const [chatSearch, setChatSearch] = useState<{ query: string; conversations: Conversation[] } | null>(
+    null,
+  );
+  const [searchingChats, setSearchingChats] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const chatListRef = useRef<HTMLDivElement>(null);
+  const chatSentinelRef = useRef<HTMLDivElement>(null);
+  const chatScrollRef = useRef<HTMLDivElement>(null);
+  const followChatRef = useRef(false);
+  const skipConversationLoadRef = useRef<string | null>(null);
   const chatLoadIdRef = useRef(0);
+  const [typingMessageId, setTypingMessageId] = useState<string | null>(null);
+  const chatQueryRef = useRef(chatQuery);
+  const searchRequestRef = useRef(0);
+  const questionInputRef = useRef<HTMLInputElement>(null);
+  const refocusQuestionRef = useRef(false);
+  chatQueryRef.current = chatQuery;
 
   const selectedDoc = useMemo(
     () => documents.find((d) => d.id === selectedDocId) ?? null,
@@ -77,12 +183,18 @@ export function WorkspacePage() {
   );
 
   async function refreshLists() {
+    const query = chatQueryRef.current.trim();
+    const requestId = ++searchRequestRef.current;
     const [docsRes, chatsRes] = await Promise.all([
       api.listDocuments(),
       api.listConversations(),
     ]);
     setDocuments(docsRes.documents);
     setConversations(chatsRes.conversations);
+    if (!query || chatQueryRef.current.trim() !== query) return;
+    const searchRes = await api.listConversations(query);
+    if (requestId !== searchRequestRef.current || chatQueryRef.current.trim() !== query) return;
+    setChatSearch({ query: query.toLowerCase(), conversations: searchRes.conversations });
   }
 
   useEffect(() => {
@@ -92,6 +204,35 @@ export function WorkspacePage() {
       })
       .finally(() => setListsLoading(false));
   }, []);
+
+  useEffect(() => {
+    const query = chatQuery.trim();
+    const requestId = ++searchRequestRef.current;
+    setVisibleChatCount(CHAT_PAGE_SIZE);
+    if (!query) {
+      setChatSearch(null);
+      setSearchingChats(false);
+      return;
+    }
+
+    setSearchingChats(true);
+    const handle = window.setTimeout(() => {
+      void api
+        .listConversations(query)
+        .then((res) => {
+          if (requestId !== searchRequestRef.current) return;
+          setChatSearch({ query: query.toLowerCase(), conversations: res.conversations });
+        })
+        .catch(() => {
+          if (requestId !== searchRequestRef.current) return;
+        })
+        .finally(() => {
+          if (requestId === searchRequestRef.current) setSearchingChats(false);
+        });
+    }, 200);
+
+    return () => window.clearTimeout(handle);
+  }, [chatQuery]);
 
   useEffect(() => {
     try {
@@ -118,11 +259,20 @@ export function WorkspacePage() {
 
   useEffect(() => {
     if (!selectedChatId) {
+      skipConversationLoadRef.current = null;
       setMessages([]);
       setMessagesLoading(false);
+      setTypingMessageId(null);
       return;
     }
 
+    // The reply was just loaded in onAsk. Keep it so the typewriter can run,
+    // including through Strict Mode's extra effect pass.
+    if (skipConversationLoadRef.current === selectedChatId) return;
+
+    skipConversationLoadRef.current = null;
+    followChatRef.current = true;
+    setTypingMessageId(null);
     const loadId = ++chatLoadIdRef.current;
     setMessagesLoading(true);
     void api
@@ -146,9 +296,12 @@ export function WorkspacePage() {
       });
   }, [selectedChatId, selectedDocId, setSearchParams]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, busy]);
+  useLayoutEffect(() => {
+    if (!followChatRef.current || messagesLoading) return;
+    const el = chatScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, busy, typingMessageId, messagesLoading]);
 
   useEffect(() => {
     if (!selectedDoc && mobilePanel === 'document') {
@@ -177,14 +330,6 @@ export function WorkspacePage() {
     };
   }, [accountMenuOpen]);
 
-  function selectDocument(id: string) {
-    const params: Record<string, string> = { doc: id };
-    if (selectedChatId) params.conversation = selectedChatId;
-    setSearchParams(params);
-    setDrawerOpen(false);
-    setMobilePanel('document');
-  }
-
   function closeDocumentView() {
     const next = new URLSearchParams();
     if (selectedChatId) next.set('conversation', selectedChatId);
@@ -210,6 +355,7 @@ export function WorkspacePage() {
     setMessages([]);
     setMessagesLoading(false);
     setHighlightPage(null);
+    setTypingMessageId(null);
     setBusy(false);
 
     const next = new URLSearchParams();
@@ -219,104 +365,21 @@ export function WorkspacePage() {
     setDrawerOpen(false);
   }
 
-  async function onUpload(fileList: FileList | File[]) {
-    if (!user?.hasOpenAIKey) {
-      setError('Add your OpenAI API key in Settings → AI before uploading.');
-      return;
-    }
-
-    const selected = Array.from(fileList);
-    const accepted = selected.filter((file) => mimeFromFile(file));
-    const skipped = selected.length - accepted.length;
-
-    if (accepted.length === 0) {
-      setError('Only PDF, Word, Excel, and image files are supported');
-      return;
-    }
-
-    const batch = accepted.map((file, index) => ({
-      localId: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-      name: file.name,
-      size: file.size,
-      progress: 0,
-      status: 'queued' as const,
-      file,
-    }));
-
-    setPendingUploads((prev) => [
-      ...batch.map(({ file: _f, ...rest }) => rest),
-      ...prev.filter((u) => u.status === 'uploading' || u.status === 'queued'),
-    ]);
-
-    let lastDocumentId: string | null = null;
-
-    const results = await api.uploadDocuments(
-      batch.map((b) => b.file),
-      {
-        onFileStart: (_file, index) => {
-          const localId = batch[index]?.localId;
-          if (!localId) return;
-          setPendingUploads((prev) =>
-            prev.map((u) =>
-              u.localId === localId
-                ? { ...u, status: 'uploading', startedAt: u.startedAt ?? Date.now() }
-                : u,
-            ),
-          );
-        },
-        onFileProgress: (_file, index, percent) => {
-          const localId = batch[index]?.localId;
-          if (!localId) return;
-          setPendingUploads((prev) =>
-            prev.map((u) => (u.localId === localId ? { ...u, progress: percent } : u)),
-          );
-        },
-        onFileComplete: (_file, index, res) => {
-          const localId = batch[index]?.localId;
-          lastDocumentId = res.document.id;
-          if (localId) {
-            setPendingUploads((prev) => prev.filter((u) => u.localId !== localId));
-          }
-        },
-        onFileError: (_file, index, err) => {
-          const localId = batch[index]?.localId;
-          if (!localId) return;
-          const message = err instanceof ApiError ? err.message : 'Upload failed';
-          setPendingUploads((prev) =>
-            prev.map((u) =>
-              u.localId === localId
-                ? { ...u, status: 'failed', progress: 0, errorMessage: message }
-                : u,
-            ),
-          );
-        },
-      },
-    );
-
-    await refreshLists();
-
-    const failedCount = results.filter((r) => r.error).length;
-    const okCount = results.length - failedCount;
-    const notes: string[] = [];
-    if (skipped > 0) {
-      notes.push(`${skipped} unsupported file${skipped === 1 ? '' : 's'} skipped`);
-    }
-    if (failedCount > 0 && okCount > 0) {
-      notes.push(`${okCount} uploaded, ${failedCount} failed`);
-    } else if (failedCount > 0 && okCount === 0) {
-      notes.push(failedCount === 1 ? 'Upload failed' : `${failedCount} uploads failed`);
-    }
-    setError(notes.join('. '));
-
-    if (lastDocumentId) {
-      setSearchParams({ doc: lastDocumentId });
-    }
-  }
-
   const readyDocs = useMemo(
     () => documents.filter((d) => d.status === 'ready'),
     [documents],
   );
+
+  function onChatScroll(event: UIEvent<HTMLDivElement>) {
+    const el = event.currentTarget;
+    followChatRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 96;
+  }
+
+  function stickChatToBottom() {
+    const el = chatScrollRef.current;
+    if (!el || !followChatRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }
 
   async function onAsk(e: FormEvent) {
     e.preventDefault();
@@ -333,7 +396,9 @@ export function WorkspacePage() {
       return;
     }
     setBusy(true);
+    setTypingMessageId(null);
     setError('');
+    followChatRef.current = true;
     const q = question.trim();
     setQuestion('');
     setMessages((prev) => [
@@ -348,52 +413,124 @@ export function WorkspacePage() {
     try {
       // Search across all ready documents in the library
       const res = await api.chat(q, selectedChatId || undefined);
+      const conv = await api.getConversation(res.conversationId);
+      const reply = [...conv.messages].reverse().find((message) => message.role === 'assistant');
+      if (res.conversationId !== selectedChatId) {
+        skipConversationLoadRef.current = res.conversationId;
+      }
       const nextParams: Record<string, string> = { conversation: res.conversationId };
       if (selectedDocId) nextParams.doc = selectedDocId;
       setSearchParams(nextParams);
-      const conv = await api.getConversation(res.conversationId);
       setMessages(conv.messages);
+      setTypingMessageId(reply?.id ?? null);
       await refreshLists();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Chat failed');
     } finally {
+      refocusQuestionRef.current = true;
       setBusy(false);
     }
   }
 
-  const chatGroups = groupByRecency(conversations);
-  const recentFiles = documents.slice(0, 8);
-  const uploading = pendingUploads.some((u) => u.status === 'uploading' || u.status === 'queued');
-  const activityNow = useActivityClock(
-    uploading || documents.some((doc) => isActiveDocument(doc)),
-  );
+  useEffect(() => {
+    if (busy || !refocusQuestionRef.current) return;
+    refocusQuestionRef.current = false;
+    questionInputRef.current?.focus();
+  }, [busy]);
+
+  const trimmedChatQuery = chatQuery.trim();
+  const normalizedChatQuery = trimmedChatQuery.toLowerCase();
+  const listedConversations = useMemo(() => {
+    if (!normalizedChatQuery) return conversations;
+    if (chatSearch?.query === normalizedChatQuery) return chatSearch.conversations;
+    return conversations.filter((c) => c.title.toLowerCase().includes(normalizedChatQuery));
+  }, [chatSearch, conversations, normalizedChatQuery]);
+  const chatLimit =
+    Number.isFinite(visibleChatCount) && visibleChatCount >= CHAT_PAGE_SIZE
+      ? visibleChatCount
+      : CHAT_PAGE_SIZE;
+  const visibleConversations = listedConversations.slice(0, chatLimit);
+  const chatGroups = groupByRecency(visibleConversations);
+  const hasMoreChats = listedConversations.length > visibleConversations.length;
+
+  useEffect(() => {
+    const root = chatListRef.current;
+    const sentinel = chatSentinelRef.current;
+    if (!root || !sentinel || !hasMoreChats || listsLoading) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setVisibleChatCount((count) => {
+          const current = Number.isFinite(count) && count >= CHAT_PAGE_SIZE ? count : CHAT_PAGE_SIZE;
+          return current + CHAT_PAGE_SIZE;
+        });
+      },
+      { root, rootMargin: '48px' },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMoreChats, listsLoading, chatLimit]);
+
+  const activityNow = useActivityClock(documents.some((doc) => isActiveDocument(doc)));
   const selectedActivity =
     selectedDoc && (isActiveDocument(selectedDoc) || selectedDoc.status === 'failed')
       ? describeProcessing(selectedDoc, activityNow)
       : null;
-  const uploadLabel = (() => {
-    const active = pendingUploads.filter((u) => u.status === 'uploading');
-    if (active.length === 0) return 'Upload';
-    if (active.length === 1) return `${active[0]!.progress}%`;
-    const avg = Math.round(active.reduce((sum, u) => sum + u.progress, 0) / active.length);
-    return `${active.length} · ${avg}%`;
-  })();
 
   const sidebar = (
-    <aside className="glass flex h-full w-[17.5rem] shrink-0 flex-col overflow-hidden">
+    <aside className="glass flex h-full w-[17.5rem] max-lg:w-full shrink-0 flex-col overflow-hidden">
       <div className="px-3 pt-4">
         <BrandMark size="sm" className="px-1" />
       </div>
 
-      <div className="px-3 pt-3 pb-2">
-        <button type="button" onClick={startNewChat} className="btn btn-secondary w-full">
-          <MessageSquarePlus className="icon-sm" aria-hidden />
-          New Chat
+      <div className="px-3 pt-2">
+        <button type="button" onClick={startNewChat} className="nav-item">
+          <MessageSquarePlus className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+          <span className="truncate">New Chat</span>
         </button>
+        <Link to="/files" className="nav-item" onClick={() => setDrawerOpen(false)}>
+          <Files className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+          <span className="truncate">Files</span>
+        </Link>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 pb-3">
+      <div className="px-3 pt-3">
         <h2 className="mb-1.5 px-2 text-sm font-semibold text-[var(--color-ink-muted)]">Chats</h2>
+        <div className="relative mb-2">
+          <Search
+            className="pointer-events-none absolute top-1/2 left-2.5 icon-sm -translate-y-1/2 text-[var(--color-ink-muted)]"
+            aria-hidden
+          />
+          <input
+            type="search"
+            value={chatQuery}
+            onChange={(e) => setChatQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && chatQuery) {
+                e.preventDefault();
+                setChatQuery('');
+              }
+            }}
+            placeholder="Search chats"
+            aria-label="Search chats"
+            autoComplete="off"
+            className="field chat-search !min-h-9 !py-1.5 !pr-8 !pl-8 text-sm"
+          />
+          {chatQuery ? (
+            <button
+              type="button"
+              className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-md p-1 text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+              aria-label="Clear chat search"
+              onClick={() => setChatQuery('')}
+            >
+              <X className="icon-sm" aria-hidden />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div ref={chatListRef} className="flex-1 overflow-y-auto px-3 pb-3">
         {listsLoading ? (
           <div className="mb-4" aria-busy="true" aria-label="Loading chats">
             <WorkspaceNavSkeleton items={5} />
@@ -401,7 +538,13 @@ export function WorkspacePage() {
         ) : (
           <>
             {chatGroups.length === 0 && (
-              <p className="mb-4 px-2 text-[13px] text-[var(--color-ink-muted)]">No chats yet</p>
+              <p className="mb-4 px-2 text-[13px] text-[var(--color-ink-muted)]">
+                {trimmedChatQuery
+                  ? searchingChats
+                    ? 'Searching…'
+                    : 'No matching chats'
+                  : 'No chats yet'}
+              </p>
             )}
             {chatGroups.map((group) => (
               <div key={group.label} className="mb-3">
@@ -414,16 +557,28 @@ export function WorkspacePage() {
                         <button
                           type="button"
                           onClick={() => selectConversation(c)}
-                          className={clsx('nav-item', active && 'nav-item-active')}
+                          className={clsx(
+                            'nav-item',
+                            c.snippet && 'items-start',
+                            active && 'nav-item-active',
+                          )}
                         >
                           <MessageSquare
                             className={clsx(
                               'icon-sm shrink-0',
+                              c.snippet && 'mt-0.5',
                               active ? 'text-[var(--color-ink)]' : 'text-[var(--color-ink-muted)]',
                             )}
                             aria-hidden
                           />
-                          <span className="truncate">{c.title}</span>
+                          <span className="min-w-0">
+                            <EllipsisText text={c.title} className="block truncate" />
+                            {c.snippet ? (
+                              <span className="block truncate text-[12px] font-normal text-[var(--color-ink-muted)]">
+                                {c.snippet}
+                              </span>
+                            ) : null}
+                          </span>
                         </button>
                       </li>
                     );
@@ -431,83 +586,9 @@ export function WorkspacePage() {
                 </ul>
               </div>
             ))}
+            {hasMoreChats ? <div ref={chatSentinelRef} className="h-px" aria-hidden /> : null}
           </>
         )}
-
-        <div className="mt-5">
-          <div className="mb-1 flex items-center justify-between gap-2 px-2">
-            <h2 className="text-sm font-semibold text-[var(--color-ink-muted)]">Files</h2>
-            <button
-              type="button"
-              onClick={() => fileRef.current?.click()}
-              disabled={uploading}
-              className="btn-ghost inline-flex items-center gap-1 !px-2 text-[13px] disabled:opacity-60"
-            >
-              {uploading ? (
-                <LoaderCircle className="icon-sm animate-spin" aria-hidden />
-              ) : (
-                <Upload className="icon-sm" aria-hidden />
-              )}
-              {uploadLabel}
-            </button>
-          </div>
-          {listsLoading && pendingUploads.length === 0 ? (
-            <div aria-busy="true" aria-label="Loading files">
-              <WorkspaceNavSkeleton items={3} />
-            </div>
-          ) : (
-            <ul className="space-y-0.5">
-              {pendingUploads.map((upload) => (
-                <li key={upload.localId}>
-                  <div className="nav-item pointer-events-none items-start">
-                    <FileText className="icon-sm mt-0.5 shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate">{upload.name}</span>
-                      <FileActivity compact {...describeUpload(upload, activityNow)} />
-                    </span>
-                  </div>
-                </li>
-              ))}
-              {recentFiles.map((doc) => {
-                const activity =
-                  isActiveDocument(doc) || doc.status === 'failed'
-                    ? describeProcessing(doc, activityNow)
-                    : null;
-                const active = selectedDocId === doc.id;
-                return (
-                  <li key={doc.id}>
-                    <button
-                      type="button"
-                      onClick={() => selectDocument(doc.id)}
-                      className={clsx('nav-item', activity && 'items-start', active && 'nav-item-active')}
-                    >
-                      <FileText
-                        className={clsx(
-                          'icon-sm mt-0.5 shrink-0',
-                          active ? 'text-[var(--color-ink)]' : 'text-[var(--color-ink-muted)]',
-                        )}
-                        aria-hidden
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">{doc.name}</span>
-                        {activity ? <FileActivity compact {...activity} /> : null}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-          <Link
-            to="/files"
-            className="nav-item mt-0.5"
-            onClick={() => setDrawerOpen(false)}
-          >
-            <Files className="icon-sm shrink-0" aria-hidden />
-            <span className="min-w-0 flex-1 truncate">View all files</span>
-            <ArrowRight className="icon-sm shrink-0" aria-hidden />
-          </Link>
-        </div>
       </div>
 
       <div ref={accountMenuRef} className="relative z-10 border-t border-[var(--color-line)] p-2">
@@ -581,24 +662,17 @@ export function WorkspacePage() {
           />
         </button>
       </div>
-      <input
-        ref={fileRef}
-        type="file"
-        accept={DOCUMENT_ACCEPT}
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          const files = e.target.files;
-          if (files && files.length > 0) void onUpload(files);
-          e.target.value = '';
-        }}
-      />
     </aside>
   );
 
+  const liveMessage =
+    !busy && typingMessageId
+      ? (messages.find((m) => m.id === typingMessageId && m.role === 'assistant') ?? null)
+      : null;
+
   const chatPanel = (
     <section className="surface flex min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="chrome-bar border-b border-[var(--color-line)] px-4 py-3">
+      <div className="chrome-bar hidden border-b border-[var(--color-line)] px-4 py-3 lg:block">
         <h2 className="flex items-center gap-2 font-semibold tracking-tight">
           <MessageSquare className="icon text-[var(--color-ink-muted)]" aria-hidden />
           <span className="truncate">Library chat</span>
@@ -667,23 +741,29 @@ export function WorkspacePage() {
         </div>
       ) : null}
 
-      <div className="flex-1 space-y-4 overflow-y-auto px-4 py-4" aria-busy={messagesLoading}>
+      <div
+        ref={chatScrollRef}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-4"
+        aria-busy={messagesLoading}
+        onScroll={onChatScroll}
+      >
         {messagesLoading ? (
           <ChatMessagesSkeleton />
         ) : (
-          <>
+          <div className="flex min-h-full flex-col">
+            <div className="space-y-4">
             {messages.length === 0 && (
               <p className="text-sm text-[var(--color-ink-muted)]">
                 Ask anything about your uploaded files. Knowra searches across your whole library.
               </p>
             )}
-            {messages.map((m) => {
+            {messages.filter((m) => m.id !== liveMessage?.id).map((m) => {
               const timeLabel = formatMessageTime(m.createdAt, timeFormat);
               return (
-                <div key={m.id} className="min-w-0">
+                <div key={m.id} className="min-w-0" {...(m.role === 'assistant' ? { 'data-response': m.id } : {})}>
                   <div
                     className={clsx(
-                      'w-fit max-w-[70%] px-4 py-3 text-left text-sm leading-relaxed',
+                      'w-fit max-w-[92%] px-3.5 py-2.5 text-left text-sm leading-relaxed sm:max-w-[70%] sm:px-4 sm:py-3',
                       m.role === 'user'
                         ? 'bubble-user ml-auto whitespace-pre-wrap'
                         : 'bubble-ai min-w-0',
@@ -692,12 +772,7 @@ export function WorkspacePage() {
                     <div className="bubble-meta">
                       <span className="inline-flex items-center gap-1.5">
                         {m.role === 'assistant' ? (
-                          <img
-                            src="/logo.png"
-                            alt=""
-                            className="size-3.5 rounded-[4px]"
-                            aria-hidden
-                          />
+                          <KnowraMark className="size-3.5 rounded-[4px]" />
                         ) : null}
                         {m.role === 'user' ? 'You' : 'Knowra'}
                       </span>
@@ -707,26 +782,54 @@ export function WorkspacePage() {
                         </time>
                       ) : null}
                     </div>
-                    {m.role === 'assistant' ? <ChatMarkdown content={m.content} /> : m.content}
+                    {m.role === 'assistant' ? (
+                      <ChatMarkdown
+                        content={m.content}
+                        animate={m.id === typingMessageId}
+                        onTick={stickChatToBottom}
+                        onComplete={() =>
+                          setTypingMessageId((current) => (current === m.id ? null : current))
+                        }
+                      />
+                    ) : (
+                      m.content
+                    )}
                   </div>
+                  {m.role === 'assistant' && m.id !== typingMessageId && m.content.trim() ? (
+                    <div className="bubble-actions">
+                      <CopyResponseButton />
+                      <ShareResponseButton onShare={() => setShareText(m.content)} />
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
-            {busy && (
-              <p className="inline-flex items-center gap-2 text-sm text-[var(--color-ink-muted)]">
-                <LoaderCircle className="icon animate-spin" aria-hidden />
-                Knowra is thinking…
-              </p>
+            {(busy || liveMessage) && (
+              <LiveReply
+                message={liveMessage}
+                timeFormat={timeFormat}
+                onTick={stickChatToBottom}
+                onTypingComplete={() =>
+                  setTypingMessageId((current) => (current === liveMessage?.id ? null : current))
+                }
+              />
             )}
-          </>
+            </div>
+            <p className="mt-auto pt-4 text-center text-[11px] leading-snug text-[var(--color-ink-muted)]">
+              Knowra is an AI and can make mistakes. Check important answers.
+            </p>
+          </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
-      <form onSubmit={onAsk} className="chrome-bar border-t border-[var(--color-line)] p-3">
+      <form
+        onSubmit={onAsk}
+        className="chrome-bar border-t border-[var(--color-line)] p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+      >
         {error && <p className="mb-2 text-sm text-[var(--color-danger)]">{error}</p>}
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <input
+            ref={questionInputRef}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             disabled={!user?.canChat || readyDocs.length === 0 || busy}
@@ -735,12 +838,12 @@ export function WorkspacePage() {
                 ? 'Ask anything across your documents…'
                 : 'Upload a ready file to start chatting…'
             }
-            className="field flex-1"
+            className="field min-w-0 flex-1"
           />
           <button
             type="submit"
             disabled={!user?.canChat || readyDocs.length === 0 || busy || !question.trim()}
-            className="btn btn-primary"
+            className="btn btn-primary shrink-0 !px-3.5 sm:!px-4"
           >
             <Send className="icon" aria-hidden />
             Ask
@@ -762,53 +865,55 @@ export function WorkspacePage() {
         aria-hidden
       />
 
-      <header className="relative z-10 mx-3 mt-3 flex items-center justify-between px-3 py-2 glass glass-tight lg:hidden">
-        <button
-          type="button"
-          className="btn btn-secondary !min-h-9 !px-3 text-sm"
-          onClick={() => setDrawerOpen(true)}
-        >
-          <Menu className="icon" aria-hidden />
-          Menu
-        </button>
-        <BrandMark size="sm" showWordmark className="!gap-2" />
+      <header className="relative z-10 mx-2 mt-2 glass glass-tight lg:hidden">
+        <div className="flex items-center gap-2 px-2 py-2">
+          <button
+            type="button"
+            className="btn btn-secondary !size-10 !min-h-10 shrink-0 !px-0"
+            aria-label="Open menu"
+            onClick={() => setDrawerOpen(true)}
+          >
+            <Menu className="icon" aria-hidden />
+          </button>
+          <BrandMark size="sm" showWordmark className="min-w-0 !gap-2" />
+        </div>
         {selectedDoc ? (
-          <div className="segmented" role="tablist" aria-label="Workspace panel">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mobilePanel === 'chat'}
-              className={clsx('segmented-btn', mobilePanel === 'chat' && 'segmented-btn-active')}
-              onClick={() => setMobilePanel('chat')}
-            >
-              <MessageSquare className="icon-sm" aria-hidden />
-              Chat
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={mobilePanel === 'document'}
-              className={clsx('segmented-btn', mobilePanel === 'document' && 'segmented-btn-active')}
-              onClick={() => setMobilePanel('document')}
-            >
-              <FileText className="icon-sm" aria-hidden />
-              Doc
-            </button>
+          <div className="px-2 pb-2">
+            <div className="segmented segmented-fill" role="tablist" aria-label="Workspace panel">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mobilePanel === 'chat'}
+                className={clsx('segmented-btn', mobilePanel === 'chat' && 'segmented-btn-active')}
+                onClick={() => setMobilePanel('chat')}
+              >
+                <MessageSquare className="icon-sm" aria-hidden />
+                Chat
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mobilePanel === 'document'}
+                className={clsx('segmented-btn', mobilePanel === 'document' && 'segmented-btn-active')}
+                onClick={() => setMobilePanel('document')}
+              >
+                <FileText className="icon-sm" aria-hidden />
+                Document
+              </button>
+            </div>
           </div>
-        ) : (
-          <span className="w-[4.5rem]" aria-hidden />
-        )}
+        ) : null}
       </header>
 
-      <div className="relative z-10 flex min-h-0 flex-1 gap-3 p-3 pt-3 lg:gap-4 lg:p-4">
+      <div className="relative z-10 flex min-h-0 flex-1 gap-2 p-2 lg:gap-4 lg:p-4">
         <div className="hidden lg:flex">{sidebar}</div>
 
         {drawerOpen && (
           <div className="absolute inset-0 z-40 flex lg:hidden">
-            <div className="m-3 h-[calc(100%-1.5rem)] shadow-none">{sidebar}</div>
+            <div className="h-full w-[min(17.5rem,calc(100%-3.25rem))] p-2 pr-0">{sidebar}</div>
             <button
               type="button"
-              className="flex-1 bg-black/25 backdrop-blur-[2px]"
+              className="min-w-12 flex-1 bg-black/45"
               aria-label="Close menu"
               onClick={() => setDrawerOpen(false)}
             />
@@ -860,6 +965,8 @@ export function WorkspacePage() {
           )}
         </div>
       </div>
+
+      <ShareResponseDialog open={shareText !== null} text={shareText ?? ''} onClose={closeShare} />
 
       <ConfirmDialog
         open={logoutConfirmOpen}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { ChevronLeft, ChevronRight, FileText, X } from 'lucide-react';
 import { getToken } from '../services/api';
@@ -45,6 +45,7 @@ export function PdfViewer({ documentId, mimeType, highlightPage, onClose }: Prop
   const [pageWidth, setPageWidth] = useState(() =>
     typeof window !== 'undefined' ? Math.min(640, Math.floor(window.innerWidth * 0.42)) : 480,
   );
+  const pdfFile = useMemo(() => (pdfData ? { data: pdfData } : null), [pdfData]);
   const stageRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
@@ -232,7 +233,8 @@ export function PdfViewer({ documentId, mimeType, highlightPage, onClose }: Prop
         ) : (
           <Document
             key={documentId}
-            file={{ data: pdfData }}
+            file={pdfFile}
+            suspense={false}
             onLoadSuccess={({ numPages: n }) => {
               setNumPages(n);
               setPageNumber((p) => Math.min(Math.max(1, p), n));

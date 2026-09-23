@@ -81,14 +81,14 @@ function MetricCard({
 }) {
   return (
     <div className="usage-metric">
-      <div className="usage-metric-icon" aria-hidden>
-        <Icon className="size-4" strokeWidth={1.75} />
-      </div>
-      <div className="min-w-0">
-        <p className="usage-metric-value">{value}</p>
+      <div className="usage-metric-top">
+        <span className="usage-metric-icon" aria-hidden>
+          <Icon className="size-3.5" strokeWidth={1.75} />
+        </span>
         <p className="usage-metric-label">{label}</p>
-        <p className="usage-metric-hint">{hint}</p>
       </div>
+      <p className="usage-metric-value">{value}</p>
+      <p className="usage-metric-hint">{hint}</p>
     </div>
   );
 }
@@ -516,7 +516,7 @@ export function ProfilePage() {
             )}
 
             {section === 'usage' && (
-              <section>
+              <section className="usage-panel">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h2 className="settings-section-title">AI usage</h2>

@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   ArrowRight,
+  ChevronDown,
   FileText,
   Files,
   LoaderCircle,
@@ -20,10 +21,12 @@ import { useAuth } from '../hooks/useAuth';
 import type { ChatMessage, Conversation, KnowraDocument } from '../types';
 import { DOCUMENT_ACCEPT, isOfficeMime, mimeFromFile } from '../utils/fileTypes';
 import { formatMessageTime, groupByRecency } from '../utils/format';
+import { describeProcessing, describeUpload, isActiveDocument, useActivityClock } from '../utils/fileActivity';
 import { usePreferences } from '../hooks/usePreferences';
 import { BrandMark } from './BrandMark';
 import { ChatMarkdown } from './ChatMarkdown';
 import { ConfirmDialog } from './ConfirmDialog';
+import { FileActivity } from './FileActivity';
 import { OfficePreview } from './OfficePreview';
 import { PdfViewer } from './PdfViewer';
 import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
@@ -51,16 +54,20 @@ export function WorkspacePage() {
   const [highlightPage, setHighlightPage] = useState<number | null>(null);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [pendingUploads, setPendingUploads] = useState<
     Array<{
       localId: string;
       name: string;
+      size: number;
       progress: number;
-      status: 'uploading' | 'failed';
+      status: 'queued' | 'uploading' | 'failed';
+      startedAt?: number;
       errorMessage?: string;
     }>
   >([]);
   const fileRef = useRef<HTMLInputElement>(null);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatLoadIdRef = useRef(0);
 
@@ -149,6 +156,27 @@ export function WorkspacePage() {
     }
   }, [selectedDoc, mobilePanel]);
 
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setAccountMenuOpen(false);
+    }
+
+    function onPointer(event: PointerEvent) {
+      if (!accountMenuRef.current?.contains(event.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    }
+
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointer);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointer);
+    };
+  }, [accountMenuOpen]);
+
   function selectDocument(id: string) {
     const params: Record<string, string> = { doc: id };
     if (selectedChatId) params.conversation = selectedChatId;
@@ -209,14 +237,15 @@ export function WorkspacePage() {
     const batch = accepted.map((file, index) => ({
       localId: `upload-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
       name: file.name,
+      size: file.size,
       progress: 0,
-      status: 'uploading' as const,
+      status: 'queued' as const,
       file,
     }));
 
     setPendingUploads((prev) => [
       ...batch.map(({ file: _f, ...rest }) => rest),
-      ...prev.filter((u) => u.status === 'uploading'),
+      ...prev.filter((u) => u.status === 'uploading' || u.status === 'queued'),
     ]);
 
     let lastDocumentId: string | null = null;
@@ -224,6 +253,17 @@ export function WorkspacePage() {
     const results = await api.uploadDocuments(
       batch.map((b) => b.file),
       {
+        onFileStart: (_file, index) => {
+          const localId = batch[index]?.localId;
+          if (!localId) return;
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? { ...u, status: 'uploading', startedAt: u.startedAt ?? Date.now() }
+                : u,
+            ),
+          );
+        },
         onFileProgress: (_file, index, percent) => {
           const localId = batch[index]?.localId;
           if (!localId) return;
@@ -323,7 +363,14 @@ export function WorkspacePage() {
 
   const chatGroups = groupByRecency(conversations);
   const recentFiles = documents.slice(0, 8);
-  const uploading = pendingUploads.some((u) => u.status === 'uploading');
+  const uploading = pendingUploads.some((u) => u.status === 'uploading' || u.status === 'queued');
+  const activityNow = useActivityClock(
+    uploading || documents.some((doc) => isActiveDocument(doc)),
+  );
+  const selectedActivity =
+    selectedDoc && (isActiveDocument(selectedDoc) || selectedDoc.status === 'failed')
+      ? describeProcessing(selectedDoc, activityNow)
+      : null;
   const uploadLabel = (() => {
     const active = pendingUploads.filter((u) => u.status === 'uploading');
     if (active.length === 0) return 'Upload';
@@ -334,22 +381,19 @@ export function WorkspacePage() {
 
   const sidebar = (
     <aside className="glass flex h-full w-[17.5rem] shrink-0 flex-col overflow-hidden">
-      <div className="border-b border-[var(--color-line)] px-4 py-4">
-        <BrandMark size="md" tagline />
+      <div className="px-3 pt-4">
+        <BrandMark size="sm" className="px-1" />
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        <div className="mb-2 flex items-center justify-between px-1">
-          <h2 className="text-xs font-semibold text-[var(--color-ink-muted)]">Chats</h2>
-          <button
-            type="button"
-            onClick={startNewChat}
-            className="btn-ghost inline-flex items-center gap-1 text-xs text-[var(--color-accent)]"
-          >
-            <MessageSquarePlus className="icon-sm" aria-hidden />
-            New Chat
-          </button>
-        </div>
+      <div className="px-3 pt-3 pb-2">
+        <button type="button" onClick={startNewChat} className="btn btn-secondary w-full">
+          <MessageSquarePlus className="icon-sm" aria-hidden />
+          New Chat
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-3 pb-3">
+        <h2 className="mb-1.5 px-2 text-sm font-semibold text-[var(--color-ink-muted)]">Chats</h2>
         {listsLoading ? (
           <div className="mb-4" aria-busy="true" aria-label="Loading chats">
             <WorkspaceNavSkeleton items={5} />
@@ -357,38 +401,47 @@ export function WorkspacePage() {
         ) : (
           <>
             {chatGroups.length === 0 && (
-              <p className="mb-4 px-2 text-xs text-[var(--color-ink-muted)]">No chats yet</p>
+              <p className="mb-4 px-2 text-[13px] text-[var(--color-ink-muted)]">No chats yet</p>
             )}
             {chatGroups.map((group) => (
               <div key={group.label} className="mb-3">
-                <p className="mb-1 px-2 text-[11px] font-medium text-[var(--color-ink-muted)]">{group.label}</p>
+                <p className="mb-1 px-2 text-[13px] text-[var(--color-ink-muted)]">{group.label}</p>
                 <ul className="space-y-0.5">
-                  {group.items.map((c) => (
-                    <li key={c.id}>
-                      <button
-                        type="button"
-                        onClick={() => selectConversation(c)}
-                        className={clsx('nav-item', selectedChatId === c.id && 'nav-item-active')}
-                      >
-                        <MessageSquare className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                        <span className="truncate">{c.title}</span>
-                      </button>
-                    </li>
-                  ))}
+                  {group.items.map((c) => {
+                    const active = selectedChatId === c.id;
+                    return (
+                      <li key={c.id}>
+                        <button
+                          type="button"
+                          onClick={() => selectConversation(c)}
+                          className={clsx('nav-item', active && 'nav-item-active')}
+                        >
+                          <MessageSquare
+                            className={clsx(
+                              'icon-sm shrink-0',
+                              active ? 'text-[var(--color-ink)]' : 'text-[var(--color-ink-muted)]',
+                            )}
+                            aria-hidden
+                          />
+                          <span className="truncate">{c.title}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ))}
           </>
         )}
 
-        <div className="mt-4 border-t border-[var(--color-line)] pt-3">
-          <div className="mb-2 flex items-center justify-between px-1">
-            <h2 className="text-xs font-semibold text-[var(--color-ink-muted)]">Files</h2>
+        <div className="mt-5">
+          <div className="mb-1 flex items-center justify-between gap-2 px-2">
+            <h2 className="text-sm font-semibold text-[var(--color-ink-muted)]">Files</h2>
             <button
               type="button"
               onClick={() => fileRef.current?.click()}
               disabled={uploading}
-              className="btn-ghost inline-flex items-center gap-1 text-xs text-[var(--color-accent)] disabled:opacity-60"
+              className="btn-ghost inline-flex items-center gap-1 !px-2 text-[13px] disabled:opacity-60"
             >
               {uploading ? (
                 <LoaderCircle className="icon-sm animate-spin" aria-hidden />
@@ -406,94 +459,127 @@ export function WorkspacePage() {
             <ul className="space-y-0.5">
               {pendingUploads.map((upload) => (
                 <li key={upload.localId}>
-                  <div className="nav-item pointer-events-none">
-                    <FileText className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                    <span className="min-w-0 flex-1 truncate">
-                      {upload.name}
-                      <span
-                        className={clsx(
-                          'ml-1 text-[11px]',
-                          upload.status === 'failed'
-                            ? 'text-[var(--color-danger)]'
-                            : 'text-[var(--color-ink-muted)]',
-                        )}
-                      >
-                        {upload.status === 'failed'
-                          ? '(failed)'
-                          : `(${Math.round(upload.progress)}%)`}
-                      </span>
+                  <div className="nav-item pointer-events-none items-start">
+                    <FileText className="icon-sm mt-0.5 shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate">{upload.name}</span>
+                      <FileActivity compact {...describeUpload(upload, activityNow)} />
                     </span>
                   </div>
                 </li>
               ))}
-              {recentFiles.map((doc) => (
-                <li key={doc.id}>
-                  <button
-                    type="button"
-                    onClick={() => selectDocument(doc.id)}
-                    className={clsx('nav-item', selectedDocId === doc.id && 'nav-item-active')}
-                  >
-                    <FileText className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-                    <span className="min-w-0 flex-1 truncate">
-                      {doc.name}
-                      {(doc.status === 'processing' || doc.status === 'uploading') &&
-                      typeof doc.progress === 'number' ? (
-                        <span className="ml-1 text-[11px] text-[var(--color-ink-muted)]">
-                          ({Math.round(doc.progress)}%)
-                        </span>
-                      ) : doc.status !== 'ready' ? (
-                        <span className="ml-1 text-[11px] text-[var(--color-ink-muted)]">({doc.status})</span>
-                      ) : null}
-                    </span>
-                  </button>
-                </li>
-              ))}
+              {recentFiles.map((doc) => {
+                const activity =
+                  isActiveDocument(doc) || doc.status === 'failed'
+                    ? describeProcessing(doc, activityNow)
+                    : null;
+                const active = selectedDocId === doc.id;
+                return (
+                  <li key={doc.id}>
+                    <button
+                      type="button"
+                      onClick={() => selectDocument(doc.id)}
+                      className={clsx('nav-item', activity && 'items-start', active && 'nav-item-active')}
+                    >
+                      <FileText
+                        className={clsx(
+                          'icon-sm mt-0.5 shrink-0',
+                          active ? 'text-[var(--color-ink)]' : 'text-[var(--color-ink-muted)]',
+                        )}
+                        aria-hidden
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{doc.name}</span>
+                        {activity ? <FileActivity compact {...activity} /> : null}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
           <Link
             to="/files"
-            className="mt-2 inline-flex items-center gap-1 px-2 text-xs font-medium text-[var(--color-accent)]"
+            className="nav-item mt-0.5"
             onClick={() => setDrawerOpen(false)}
           >
-            <Files className="icon-sm" aria-hidden />
-            View all files
-            <ArrowRight className="icon-sm" aria-hidden />
+            <Files className="icon-sm shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1 truncate">View all files</span>
+            <ArrowRight className="icon-sm shrink-0" aria-hidden />
           </Link>
         </div>
       </div>
 
-      <div className="border-t border-[var(--color-line)] px-4 py-3 text-sm">
-        <Link
-          to="/profile"
-          className="flex items-center gap-2.5 rounded-lg px-1 py-1 transition-colors hover:bg-white/[0.04]"
-          onClick={() => setDrawerOpen(false)}
+      <div ref={accountMenuRef} className="relative z-10 border-t border-[var(--color-line)] p-2">
+        {accountMenuOpen ? (
+          <div
+            role="menu"
+            aria-label="Account"
+            className="absolute inset-x-2 bottom-full z-20 mb-1 rounded-[var(--radius-control)] border border-[var(--color-line)] bg-[var(--color-panel)] p-1 shadow-[0_16px_40px_-18px_rgba(0,0,0,0.85)]"
+          >
+            <Link
+              to="/profile"
+              role="menuitem"
+              className="nav-item"
+              onClick={() => {
+                setAccountMenuOpen(false);
+                setDrawerOpen(false);
+              }}
+            >
+              <UserRound className="icon-sm text-[var(--color-ink-muted)]" aria-hidden />
+              Profile
+            </Link>
+            <Link
+              to="/settings"
+              role="menuitem"
+              className="nav-item"
+              onClick={() => {
+                setAccountMenuOpen(false);
+                setDrawerOpen(false);
+              }}
+            >
+              <Settings className="icon-sm text-[var(--color-ink-muted)]" aria-hidden />
+              Settings
+            </Link>
+            <div className="my-1 border-t border-[var(--color-line)]" role="separator" />
+            <button
+              type="button"
+              role="menuitem"
+              className="nav-item btn-danger-text"
+              onClick={() => {
+                setAccountMenuOpen(false);
+                setLogoutConfirmOpen(true);
+              }}
+            >
+              <LogOut className="icon-sm" aria-hidden />
+              Log out
+            </button>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition-colors hover:bg-white/[0.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/50"
+          aria-haspopup="menu"
+          aria-expanded={accountMenuOpen}
+          onClick={() => setAccountMenuOpen((open) => !open)}
         >
           <UserAvatar user={user} size="sm" />
-          <div className="min-w-0 flex-1">
-            <p className="truncate font-medium text-[var(--color-ink)]">{displayName(user)}</p>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-[var(--color-ink)]">
+              {displayName(user)}
+            </span>
             {user?.name?.trim() ? (
-              <p className="truncate text-xs text-[var(--color-ink-muted)]">{user.email}</p>
+              <span className="block truncate text-[13px] text-[var(--color-ink-muted)]">{user.email}</span>
             ) : null}
-          </div>
-        </Link>
-        <div className="mt-2 flex flex-col gap-0.5">
-          <Link to="/profile" className="nav-item" onClick={() => setDrawerOpen(false)}>
-            <UserRound className="icon-sm text-[var(--color-ink-muted)]" aria-hidden />
-            Profile
-          </Link>
-          <Link to="/settings" className="nav-item" onClick={() => setDrawerOpen(false)}>
-            <Settings className="icon-sm text-[var(--color-ink-muted)]" aria-hidden />
-            Settings
-          </Link>
-          <button
-            type="button"
-            className="nav-item btn-danger-text"
-            onClick={() => setLogoutConfirmOpen(true)}
-          >
-            <LogOut className="icon-sm" aria-hidden />
-            Log out
-          </button>
-        </div>
+          </span>
+          <ChevronDown
+            className={clsx(
+              'icon-sm shrink-0 text-[var(--color-ink-muted)] motion-safe:transition-transform',
+              accountMenuOpen && 'rotate-180',
+            )}
+            aria-hidden
+          />
+        </button>
       </div>
       <input
         ref={fileRef}
@@ -594,13 +680,13 @@ export function WorkspacePage() {
             {messages.map((m) => {
               const timeLabel = formatMessageTime(m.createdAt, timeFormat);
               return (
-                <div key={m.id} className={clsx(m.role === 'user' ? 'text-right' : 'text-left')}>
+                <div key={m.id} className="min-w-0">
                   <div
                     className={clsx(
-                      'inline-block px-4 py-3 text-sm leading-relaxed',
+                      'w-fit max-w-[70%] px-4 py-3 text-left text-sm leading-relaxed',
                       m.role === 'user'
-                        ? 'bubble-user max-w-[min(90%,28rem)] whitespace-pre-wrap'
-                        : 'bubble-ai max-w-[min(94%,40rem)]',
+                        ? 'bubble-user ml-auto whitespace-pre-wrap'
+                        : 'bubble-ai min-w-0',
                     )}
                   >
                     <div className="bubble-meta">
@@ -746,6 +832,12 @@ export function WorkspacePage() {
               )}
             >
               <section className="surface flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
+                {selectedActivity ? (
+                  <div className="border-b border-[var(--color-line)] px-4 py-3">
+                    <p className="mb-2 truncate text-sm font-medium">{selectedDoc.name}</p>
+                    <FileActivity {...selectedActivity} />
+                  </div>
+                ) : null}
                 <div className="flex h-full min-h-0 w-full flex-1 flex-col">
                   {isOfficeMime(selectedDoc.mimeType) ? (
                     <OfficePreview

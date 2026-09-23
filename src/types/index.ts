@@ -55,6 +55,14 @@ export type AiSettings = {
 
 export type DocumentStatus = 'uploading' | 'processing' | 'ready' | 'failed';
 
+export type DocumentStage =
+  | 'queued'
+  | 'downloading'
+  | 'reading'
+  | 'extracting'
+  | 'indexing'
+  | 'finishing';
+
 export type KnowraDocument = {
   id: string;
   name: string;
@@ -66,6 +74,8 @@ export type KnowraDocument = {
   pageCount?: number | null;
   /** 0–100 while processing */
   progress?: number | null;
+  stage?: DocumentStage | null;
+  processingStartedAt?: string | null;
   createdAt: string;
   updatedAt: string;
 };

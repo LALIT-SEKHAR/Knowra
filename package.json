@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "katex": "^0.18.7",
     "lucide-react": "^1.47.0",
     "pdfjs-dist": "6.3.289",
     "react": "^19.2.8",
@@ -24,7 +25,9 @@
     "react-markdown": "^10.1.0",
     "react-pdf": "^11.0.0",
     "react-router-dom": "^7.18.4",
+    "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "serve": "^14.2.6"
   },
   "devDependencies": {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import clsx from 'clsx';
 import type { UsageDay, UsageTotals } from '../types';
 
@@ -96,14 +96,17 @@ function buildWeeks(days: UsageDay[]): UsageDay[][] {
 function monthLabelsForWeeks(weeks: UsageDay[][]): Array<{ weekIndex: number; label: string }> {
   const labels: Array<{ weekIndex: number; label: string }> = [];
   let lastMonth = -1;
+  let lastLabelWeek = -99;
   weeks.forEach((week, weekIndex) => {
     const firstReal = week.find((d) => d.date);
     if (!firstReal) return;
     const month = new Date(`${firstReal.date}T12:00:00.000Z`).getUTCMonth();
-    if (month !== lastMonth) {
-      labels.push({ weekIndex, label: MONTH_LABELS[month]! });
-      lastMonth = month;
-    }
+    if (month === lastMonth) return;
+    lastMonth = month;
+    // Narrow columns overlap if two month names start within a few weeks.
+    if (weekIndex - lastLabelWeek < 3) return;
+    labels.push({ weekIndex, label: MONTH_LABELS[month]! });
+    lastLabelWeek = weekIndex;
   });
   return labels;
 }
@@ -115,74 +118,109 @@ type Props = {
 
 export function UsageActivityGraph({ days, className }: Props) {
   const [hover, setHover] = useState<UsageDay | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToToday = useRef(true);
   const weeks = useMemo(() => buildWeeks(days), [days]);
   const monthLabels = useMemo(() => monthLabelsForWeeks(weeks), [weeks]);
   const activeDays = days.filter((d) => d.score > 0).length;
+  const todayKey = days.length > 0 ? days[days.length - 1]!.date : '';
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || weeks.length === 0) return;
+    stickToToday.current = true;
+
+    const pinToToday = () => {
+      if (!stickToToday.current) return;
+      el.scrollLeft = el.scrollWidth;
+    };
+
+    pinToToday();
+    const frame = requestAnimationFrame(pinToToday);
+
+    const onScroll = () => {
+      const max = el.scrollWidth - el.clientWidth;
+      stickToToday.current = max <= 1 || max - el.scrollLeft < 2;
+    };
+
+    const observer = new ResizeObserver(() => {
+      pinToToday();
+    });
+    observer.observe(el);
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      el.removeEventListener('scroll', onScroll);
+    };
+  }, [weeks.length]);
 
   return (
-    <div className={clsx('usage-graph', className)}>
-      <div className="usage-graph-scroll">
-        <div
-          className="usage-graph-months"
-          style={{ gridTemplateColumns: `1.75rem repeat(${weeks.length}, 11px)` }}
-          aria-hidden
-        >
-          {monthLabels.map(({ weekIndex, label }) => (
-            <span
-              key={`${label}-${weekIndex}`}
-              className="usage-graph-month"
-              style={{ gridColumn: weekIndex + 2 }}
-            >
-              {label}
-            </span>
-          ))}
+    <div
+      className={clsx('usage-graph', className)}
+      style={{ '--week-count': weeks.length } as CSSProperties}
+    >
+      <div className="usage-graph-frame">
+        <div className="usage-graph-axis" aria-hidden>
+          <span className="usage-graph-axis-spacer" />
+          <div className="usage-graph-weekdays">
+            {WEEKDAYS.map((label, row) => (
+              <span key={`wd-${row}`} className="usage-graph-weekday">
+                {label}
+              </span>
+            ))}
+          </div>
         </div>
 
-        <div
-          className="usage-graph-grid"
-          style={{ gridTemplateColumns: `1.75rem repeat(${weeks.length}, 11px)` }}
-        >
-          {WEEKDAYS.map((label, row) => (
-            <span
-              key={`wd-${row}`}
-              className="usage-graph-weekday"
-              style={{ gridRow: row + 1, gridColumn: 1 }}
-            >
-              {label}
-            </span>
-          ))}
+        <div className="usage-graph-scroll" ref={scrollRef}>
+          <div className="usage-graph-months" aria-hidden>
+            {monthLabels.map(({ weekIndex, label }) => (
+              <span
+                key={`${label}-${weekIndex}`}
+                className="usage-graph-month"
+                style={{ gridColumn: weekIndex + 1 }}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
 
-          {weeks.map((week, weekIndex) =>
-            week.map((day, dayIndex) => {
-              const empty = !day.date;
-              return (
-                <button
-                  key={`${weekIndex}-${dayIndex}`}
-                  type="button"
-                  disabled={empty}
-                  className={clsx(
-                    'usage-graph-cell',
-                    !empty && `usage-graph-level-${day.level}`,
-                    empty && 'usage-graph-cell-empty',
-                  )}
-                  style={{ gridRow: dayIndex + 1, gridColumn: weekIndex + 2 }}
-                  aria-label={
-                    empty
-                      ? undefined
-                      : `${formatDayLabel(day.date)}: ${day.score} activity, ${day.chats} chats, ${day.uploads} uploads`
-                  }
-                  onMouseEnter={() => {
-                    if (!empty) setHover(day);
-                  }}
-                  onFocus={() => {
-                    if (!empty) setHover(day);
-                  }}
-                  onMouseLeave={() => setHover(null)}
-                  onBlur={() => setHover(null)}
-                />
-              );
-            }),
-          )}
+          <div className="usage-graph-grid">
+            {weeks.map((week, weekIndex) =>
+              week.map((day, dayIndex) => {
+                const empty = !day.date;
+                const isToday = !empty && day.date === todayKey;
+                return (
+                  <button
+                    key={`${weekIndex}-${dayIndex}`}
+                    type="button"
+                    disabled={empty}
+                    className={clsx(
+                      'usage-graph-cell',
+                      !empty && `usage-graph-level-${day.level}`,
+                      empty && 'usage-graph-cell-empty',
+                      isToday && 'usage-graph-cell-today',
+                    )}
+                    style={{ gridRow: dayIndex + 1, gridColumn: weekIndex + 1 }}
+                    aria-current={isToday ? 'date' : undefined}
+                    aria-label={
+                      empty
+                        ? undefined
+                        : `${formatDayLabel(day.date)}: ${day.score} activity, ${day.chats} chats, ${day.uploads} uploads`
+                    }
+                    onMouseEnter={() => {
+                      if (!empty) setHover(day);
+                    }}
+                    onFocus={() => {
+                      if (!empty) setHover(day);
+                    }}
+                    onMouseLeave={() => setHover(null)}
+                    onBlur={() => setHover(null)}
+                  />
+                );
+              }),
+            )}
+          </div>
         </div>
       </div>
 

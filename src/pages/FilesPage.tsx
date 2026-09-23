@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
-import clsx from 'clsx';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -26,14 +25,17 @@ import { useAuth } from '../hooks/useAuth';
 import { UserAvatar, displayName } from '../components/UserAvatar';
 import { BrandMark } from '../components/BrandMark';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { FileActivity } from '../components/FileActivity';
 import { FilesListSkeleton, FilesTableSkeleton } from '../components/Skeleton';
+import { describeProcessing, describeUpload, isActiveDocument, useActivityClock } from '../utils/fileActivity';
 
 type PendingUpload = {
   localId: string;
   name: string;
   size: number;
   progress: number;
-  status: 'uploading' | 'failed';
+  status: 'queued' | 'uploading' | 'failed';
+  startedAt?: number;
   errorMessage?: string;
 };
 
@@ -49,7 +51,10 @@ export function FilesPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const uploading = pendingUploads.some((u) => u.status === 'uploading');
+  const uploading = pendingUploads.some((u) => u.status === 'uploading' || u.status === 'queued');
+  const activityNow = useActivityClock(
+    uploading || documents.some((doc) => isActiveDocument(doc)),
+  );
 
   const load = useCallback(async (q?: string) => {
     setError('');
@@ -134,19 +139,30 @@ export function FilesPage() {
       name: file.name,
       size: file.size,
       progress: 0,
-      status: 'uploading' as const,
+      status: 'queued' as const,
       file,
     }));
 
     setPendingUploads((prev) => [
       ...batch.map(({ file: _f, ...rest }) => rest),
-      ...prev.filter((u) => u.status === 'uploading'),
+      ...prev.filter((u) => u.status === 'uploading' || u.status === 'queued'),
     ]);
 
     try {
       const results = await api.uploadDocuments(
         batch.map((b) => b.file),
         {
+          onFileStart: (_file, index) => {
+            const localId = batch[index]?.localId;
+            if (!localId) return;
+            setPendingUploads((prev) =>
+              prev.map((u) =>
+                u.localId === localId
+                  ? { ...u, status: 'uploading', startedAt: u.startedAt ?? Date.now() }
+                  : u,
+              ),
+            );
+          },
           onFileProgress: (_file, index, percent) => {
             const localId = batch[index]?.localId;
             if (!localId) return;
@@ -259,118 +275,25 @@ export function FilesPage() {
   const rows = useMemo(() => documents, [documents]);
 
   const uploadButtonLabel = useMemo(() => {
-    const active = pendingUploads.filter((u) => u.status === 'uploading');
+    const active = pendingUploads.filter((u) => u.status === 'uploading' || u.status === 'queued');
     if (active.length === 0) return 'Upload';
-    if (active.length === 1) return `Uploading ${active[0]!.progress}%`;
-    const avg = Math.round(active.reduce((sum, u) => sum + u.progress, 0) / active.length);
-    return `Uploading ${active.length} files · ${avg}%`;
+    const current = active.find((u) => u.status === 'uploading');
+    if (active.length === 1 && current) return `Uploading ${Math.round(current.progress)}%`;
+    if (current) return `Uploading ${active.length} · ${Math.round(current.progress)}%`;
+    return `Uploading ${active.length}`;
   }, [pendingUploads]);
 
   function statusLabel(doc: KnowraDocument) {
     if (doc.status === 'ready') return 'Ready';
-    if (doc.status === 'processing') {
-      const pct =
-        typeof doc.progress === 'number' ? Math.max(0, Math.min(100, Math.round(doc.progress))) : null;
-      return pct !== null ? `Processing ${pct}%` : 'Processing…';
-    }
-    if (doc.status === 'uploading') {
-      const pct =
-        typeof doc.progress === 'number' ? Math.max(0, Math.min(100, Math.round(doc.progress))) : null;
-      return pct !== null ? `Uploading ${pct}%` : 'Uploading…';
-    }
     if (doc.status === 'failed') {
-      return `Failed${doc.errorMessage ? `: ${doc.errorMessage}` : ''}`;
+      return doc.errorMessage ? `Failed: ${doc.errorMessage}` : 'Failed';
     }
     return doc.status;
   }
 
-  function PendingStatus({ upload }: { upload: PendingUpload }) {
-    const pct = Math.max(0, Math.min(100, Math.round(upload.progress)));
-    const failed = upload.status === 'failed';
-
-    return (
-      <span
-        className={clsx(
-          'inline-flex min-w-0 flex-col gap-1',
-          failed && 'text-[var(--color-danger)]',
-        )}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          {failed ? (
-            <XCircle className="icon-sm text-[var(--color-danger)]" aria-hidden />
-          ) : (
-            <LoaderCircle className="icon-sm animate-spin text-[var(--color-ink-muted)]" aria-hidden />
-          )}
-          <span>
-            {failed
-              ? `Failed${upload.errorMessage ? `: ${upload.errorMessage}` : ''}`
-              : `Uploading ${pct}%`}
-          </span>
-        </span>
-        {!failed ? (
-          <span
-            className="block h-1 w-24 overflow-hidden rounded-full bg-white/10"
-            role="progressbar"
-            aria-valuenow={pct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`Uploading ${pct}%`}
-          >
-            <span
-              className="block h-full rounded-full bg-white/70 transition-[width] duration-300"
-              style={{ width: `${pct}%` }}
-            />
-          </span>
-        ) : null}
-      </span>
-    );
-  }
-
-  function StatusCell({ doc }: { doc: KnowraDocument }) {
-    const processing = doc.status === 'processing' || doc.status === 'uploading';
-    const pct =
-      processing && typeof doc.progress === 'number'
-        ? Math.max(0, Math.min(100, Math.round(doc.progress)))
-        : null;
-
-    return (
-      <span
-        className={clsx(
-          'inline-flex min-w-0 flex-col gap-1',
-          doc.status === 'failed' && 'text-[var(--color-danger)]',
-        )}
-      >
-        <span className="inline-flex items-center gap-1.5">
-          <StatusIcon doc={doc} />
-          <span className={clsx(!processing && 'capitalize')}>{statusLabel(doc)}</span>
-        </span>
-        {pct !== null ? (
-          <span
-            className="block h-1 w-24 overflow-hidden rounded-full bg-white/10"
-            role="progressbar"
-            aria-valuenow={pct}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-label={`${doc.status === 'uploading' ? 'Uploading' : 'Processing'} ${pct}%`}
-          >
-            <span
-              className="block h-full rounded-full bg-white/70 transition-[width] duration-500"
-              style={{ width: `${pct}%` }}
-            />
-          </span>
-        ) : null}
-      </span>
-    );
-  }
-
   function StatusIcon({ doc }: { doc: KnowraDocument }) {
-    if (doc.status === 'ready') {
-      return <CheckCircle2 className="icon-sm text-[var(--color-accent)]" aria-hidden />;
-    }
-    if (doc.status === 'failed') {
-      return <XCircle className="icon-sm text-[var(--color-danger)]" aria-hidden />;
-    }
-    return <LoaderCircle className="icon-sm animate-spin text-[var(--color-ink-muted)]" aria-hidden />;
+    if (doc.status !== 'ready') return null;
+    return <CheckCircle2 className="icon-sm text-[var(--color-accent)]" aria-hidden />;
   }
 
   function DocActions({ doc }: { doc: KnowraDocument }) {
@@ -591,30 +514,8 @@ export function FilesPage() {
                           <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
                           <span className="truncate">{upload.name}</span>
                         </p>
-                        <p className="mt-1 flex items-start gap-1.5 text-xs text-[var(--color-ink-muted)]">
-                          <span className="min-w-0">
-                            {formatBytes(upload.size)} ·{' '}
-                            {upload.status === 'failed'
-                              ? `Failed${upload.errorMessage ? `: ${upload.errorMessage}` : ''}`
-                              : `Uploading ${Math.round(upload.progress)}%`}
-                            {upload.status === 'uploading' ? (
-                              <span
-                                className="mt-1.5 block h-1 w-28 overflow-hidden rounded-full bg-white/10"
-                                role="progressbar"
-                                aria-valuenow={Math.round(upload.progress)}
-                                aria-valuemin={0}
-                                aria-valuemax={100}
-                              >
-                                <span
-                                  className="block h-full rounded-full bg-white/70 transition-[width] duration-300"
-                                  style={{
-                                    width: `${Math.max(0, Math.min(100, Math.round(upload.progress)))}%`,
-                                  }}
-                                />
-                              </span>
-                            ) : null}
-                          </span>
-                        </p>
+                        <p className="mt-1 text-xs text-[var(--color-ink-muted)]">{formatBytes(upload.size)}</p>
+                        <FileActivity {...describeUpload(upload, activityNow)} />
                       </div>
                       {upload.status === 'failed' ? (
                         <button
@@ -637,32 +538,23 @@ export function FilesPage() {
                           <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
                           <span className="truncate">{doc.name}</span>
                         </p>
-                        <p className="mt-1 flex items-start gap-1.5 text-xs text-[var(--color-ink-muted)]">
-                          <span className="mt-0.5 shrink-0">
-                            <StatusIcon doc={doc} />
-                          </span>
-                          <span className="min-w-0">
-                            {formatBytes(doc.size)} · {statusLabel(doc)} ·{' '}
-                            {formatRelativeDate(doc.updatedAt)}
-                            {(doc.status === 'processing' || doc.status === 'uploading') &&
-                            typeof doc.progress === 'number' ? (
-                              <span
-                                className="mt-1.5 block h-1 w-28 overflow-hidden rounded-full bg-white/10"
-                                role="progressbar"
-                                aria-valuenow={Math.round(doc.progress)}
-                                aria-valuemin={0}
-                                aria-valuemax={100}
-                              >
-                                <span
-                                  className="block h-full rounded-full bg-white/70 transition-[width] duration-500"
-                                  style={{
-                                    width: `${Math.max(0, Math.min(100, Math.round(doc.progress)))}%`,
-                                  }}
-                                />
-                              </span>
-                            ) : null}
+                        <p className="mt-1 flex items-center gap-1.5 text-xs text-[var(--color-ink-muted)]">
+                          {doc.status === 'ready' ? <StatusIcon doc={doc} /> : null}
+                          <span>
+                            {formatBytes(doc.size)}
+                            {doc.status === 'ready' ? ' · Ready' : ''} · {formatRelativeDate(doc.updatedAt)}
                           </span>
                         </p>
+                        {isActiveDocument(doc) || doc.status === 'failed' ? (
+                          <FileActivity
+                            {...(describeProcessing(doc, activityNow) ?? {
+                              title: statusLabel(doc),
+                              detail: null,
+                              progress: null,
+                              failed: doc.status === 'failed',
+                            })}
+                          />
+                        ) : null}
                       </div>
                       <DocActions doc={doc} />
                     </div>
@@ -705,10 +597,8 @@ export function FilesPage() {
                         </td>
                         <td className="px-4 py-3.5">{fileKindLabel(upload.name)}</td>
                         <td className="px-4 py-3.5">{formatBytes(upload.size)}</td>
-                        <td
-                          className={`px-4 py-3.5 ${upload.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
-                        >
-                          <PendingStatus upload={upload} />
+                        <td className="px-4 py-3.5">
+                          <FileActivity {...describeUpload(upload, activityNow)} />
                         </td>
                         <td className="px-4 py-3.5 text-[var(--color-ink-muted)]">Just now</td>
                         <td className="px-4 py-3.5">
@@ -734,10 +624,22 @@ export function FilesPage() {
                         </td>
                         <td className="px-4 py-3.5">{fileKindLabel(doc.mimeType)}</td>
                         <td className="px-4 py-3.5">{formatBytes(doc.size)}</td>
-                        <td
-                          className={`px-4 py-3.5 ${doc.status === 'failed' ? 'text-[var(--color-danger)]' : ''}`}
-                        >
-                          <StatusCell doc={doc} />
+                        <td className="px-4 py-3.5">
+                          {isActiveDocument(doc) || doc.status === 'failed' ? (
+                            <FileActivity
+                              {...(describeProcessing(doc, activityNow) ?? {
+                                title: statusLabel(doc),
+                                detail: null,
+                                progress: null,
+                                failed: doc.status === 'failed',
+                              })}
+                            />
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5">
+                              <StatusIcon doc={doc} />
+                              {statusLabel(doc)}
+                            </span>
+                          )}
                         </td>
                         <td className="px-4 py-3.5">{formatRelativeDate(doc.updatedAt)}</td>
                         <td className="px-4 py-3.5">

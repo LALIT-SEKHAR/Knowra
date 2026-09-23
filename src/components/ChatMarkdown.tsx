@@ -148,7 +148,7 @@ function closingMathText(text: string, from: number, size: number) {
 }
 
 /** Keep a half-typed formula out of KaTeX until its closing delimiter arrives. */
-function endOutsideMath(text: string, index: number, ranges: MathRange[]) {
+function endOutsideMath(index: number, ranges: MathRange[]) {
   for (const range of ranges) {
     if (index > range.start && index < range.end) return range.start;
   }
@@ -221,7 +221,7 @@ export function ChatMarkdown({ content, animate = false, onComplete, onTick }: P
   const typing = animate && !reduceMotion && typedCount < normalized.length;
   const ranges = useMemo(() => (typing ? mathRanges(normalized) : []), [normalized, typing]);
   const shown = typing
-    ? closePartialMarkdown(normalized.slice(0, endOutsideMath(normalized, typedCount, ranges)))
+    ? closePartialMarkdown(normalized.slice(0, endOutsideMath(typedCount, ranges)))
     : normalized;
 
   return (

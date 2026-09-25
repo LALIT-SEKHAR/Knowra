@@ -32,6 +32,24 @@ export type User = {
   canChat?: boolean;
   /** ISO date when account purge is scheduled; null if not pending */
   deletionScheduledFor?: string | null;
+  canManage?: boolean;
+  /** Ready documents in the active workspace, including ones a member cannot open. */
+  readyDocumentCount?: number;
+  activeOrg?: {
+    id: string;
+    name: string;
+    slug: string;
+    imageUrl?: string | null;
+    role: 'admin' | 'member';
+    joinsEnabled?: boolean;
+  } | null;
+  memberships?: {
+    id: string;
+    name: string;
+    slug: string;
+    imageUrl?: string | null;
+    role: 'admin' | 'member';
+  }[];
 };
 
 export type AiSettings = {

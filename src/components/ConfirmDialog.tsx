@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import clsx from 'clsx';
 
 export type ConfirmDialogProps = {
@@ -9,6 +9,8 @@ export type ConfirmDialogProps = {
   cancelLabel?: string;
   danger?: boolean;
   busy?: boolean;
+  confirmDisabled?: boolean;
+  children?: ReactNode;
   /** If set, user must type this exact text before confirm is enabled */
   requireText?: string;
   onConfirm: () => void;
@@ -23,6 +25,8 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   danger = false,
   busy = false,
+  confirmDisabled = false,
+  children,
   requireText,
   onConfirm,
   onCancel,
@@ -87,6 +91,7 @@ export function ConfirmDialog({
             />
           </label>
         ) : null}
+        {children}
         <div className="mt-6 flex flex-wrap justify-end gap-2">
           <button
             ref={cancelRef}
@@ -100,7 +105,7 @@ export function ConfirmDialog({
           <button
             type="button"
             className={clsx('btn', danger ? 'btn-danger-soft' : 'btn-primary')}
-            disabled={busy || !requireOk}
+            disabled={busy || !requireOk || confirmDisabled}
             onClick={onConfirm}
           >
             {busy ? 'Please wait…' : confirmLabel}

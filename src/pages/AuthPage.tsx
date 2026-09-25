@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Navigate } from 'react-router-dom';
-import { ArrowLeft, Check, LoaderCircle, Mail, RefreshCw, ShieldCheck } from 'lucide-react';
-import { api, ApiError } from '../services/api';
+import { ArrowLeft, Building2, Check, LoaderCircle, Mail, RefreshCw, ShieldCheck, UserRound } from 'lucide-react';
+import { api, ApiError, setToken } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { BrandMark } from '../components/BrandMark';
 
@@ -15,7 +15,9 @@ export function AuthPage() {
   const { user, loading, login } = useAuth();
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
-  const [step, setStep] = useState<'email' | 'otp'>('email');
+  const [step, setStep] = useState<'email' | 'otp' | 'intent' | 'org'>('email');
+  const [pendingToken, setPendingToken] = useState('');
+  const [orgName, setOrgName] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [resending, setResending] = useState(false);
@@ -110,6 +112,11 @@ export function AuthPage() {
           // ignore
         }
       }
+      if (result.isNew) {
+        setPendingToken(result.token);
+        setStep('intent');
+        return;
+      }
       await login(result.token);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Verification failed');
@@ -134,9 +141,15 @@ export function AuthPage() {
         <BrandMark size="lg" tagline stacked />
 
         <div className="glass mt-8 p-5 sm:mt-10 sm:p-7">
-          <h1 className="text-xl font-semibold tracking-tight">Sign in</h1>
+          <h1 className="text-xl font-semibold tracking-tight">
+            {step === 'intent' ? 'How will you use Knowra?' : step === 'org' ? 'Name your organization' : 'Sign in'}
+          </h1>
           <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
-            Passwordless email OTP — no password needed.
+            {step === 'intent'
+              ? 'This is a new account. Personal keeps the library private. An organization lets you invite people to ask questions.'
+              : step === 'org'
+                ? 'This name is unique across Knowra. You will be the admin.'
+                : 'Passwordless email OTP — no password needed.'}
           </p>
 
           {step === 'email' ? (
@@ -168,7 +181,7 @@ export function AuthPage() {
                 {busy ? 'Sending…' : 'Send code'}
               </button>
             </form>
-          ) : (
+          ) : step === 'otp' ? (
             <form className="mt-6 space-y-4" onSubmit={onVerify}>
               <p className="text-sm text-[var(--color-ink-muted)]">
                 Enter the code sent to <strong className="text-[var(--color-ink)]">{email}</strong>
@@ -244,6 +257,68 @@ export function AuthPage() {
               >
                 <ArrowLeft className="icon" aria-hidden />
                 Use a different email
+              </button>
+            </form>
+          ) : step === 'intent' ? (
+            <div className="mt-6 space-y-3">
+              <button
+                type="button"
+                className="btn btn-primary w-full"
+                onClick={() => void login(pendingToken)}
+              >
+                <UserRound className="icon" aria-hidden />
+                Personal
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary w-full"
+                onClick={() => {
+                  setError('');
+                  setStep('org');
+                }}
+              >
+                <Building2 className="icon" aria-hidden />
+                Organization
+              </button>
+            </div>
+          ) : (
+            <form
+              className="mt-6 space-y-4"
+              onSubmit={(e) => {
+                e.preventDefault();
+                setError('');
+                setBusy(true);
+                setToken(pendingToken);
+                void api
+                  .checkOrgName(orgName.trim())
+                  .then(() => api.createOrg(orgName.trim()))
+                  .then(() => login(pendingToken))
+                  .catch((err) => {
+                    setError(err instanceof ApiError ? err.message : 'Could not create the organization');
+                  })
+                  .finally(() => setBusy(false));
+              }}
+            >
+              <label className="block text-sm font-medium">
+                Organization name
+                <input
+                  required
+                  minLength={2}
+                  maxLength={80}
+                  value={orgName}
+                  onChange={(e) => setOrgName(e.target.value)}
+                  className="field mt-1.5"
+                  placeholder="Acme Library"
+                />
+              </label>
+              {error && <p className="text-sm text-[var(--color-danger)]">{error}</p>}
+              <button type="submit" disabled={busy} className="btn btn-primary w-full">
+                {busy ? <LoaderCircle className="icon animate-spin" aria-hidden /> : null}
+                {busy ? 'Creating…' : 'Create organization'}
+              </button>
+              <button type="button" className="btn btn-ghost w-full text-sm" onClick={() => setStep('intent')}>
+                <ArrowLeft className="icon" aria-hidden />
+                Back
               </button>
             </form>
           )}

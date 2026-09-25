@@ -3,6 +3,7 @@ import { AuthProvider } from './hooks/useAuth';
 import { PreferencesProvider } from './hooks/usePreferences';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { AuthPage } from './pages/AuthPage';
+import { JoinOrgPage } from './pages/JoinOrgPage';
 import { FilesPage } from './pages/FilesPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { SettingsPage } from './pages/SettingsPage';
@@ -15,6 +16,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/auth" element={<AuthPage />} />
+            <Route path="/join/:slug" element={<JoinOrgPage />} />
             <Route element={<ProtectedRoute />}>
               <Route path="/" element={<WorkspacePage />} />
               <Route path="/files" element={<FilesPage />} />

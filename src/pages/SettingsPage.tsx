@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
+  Building2,
   Check,
+  ChevronLeft,
   ChevronRight,
   Clock3,
   Files,
+  ImageUp,
   KeyRound,
   LoaderCircle,
   LogOut,
@@ -23,14 +26,16 @@ import { useAuth } from '../hooks/useAuth';
 import { usePreferences, type ThemePreference, type TimeFormat } from '../hooks/usePreferences';
 import { UserAvatar, displayName } from '../components/UserAvatar';
 import { BrandMark } from '../components/BrandMark';
+import { AvatarCropDialog } from '../components/AvatarCropDialog';
 import { ConfirmDialog } from '../components/ConfirmDialog';
+import { MemberPicker } from '../components/MemberPicker';
 import { DeleteAccountDialog } from '../components/DeleteAccountDialog';
 import { DeleteAllFilesDialog } from '../components/DeleteAllFilesDialog';
 import type { AiSettings, ChatProviderId, ChatProviderOption } from '../types';
 import clsx from 'clsx';
 
 type ConfirmKind = 'remove-key' | 'clear-chats' | 'remove-provider-key' | null;
-type SettingsSection = 'preferences' | 'api-key' | 'data' | 'account';
+type SettingsSection = 'preferences' | 'organization' | 'api-key' | 'data' | 'account';
 type ProviderKeyId = 'anthropic' | 'google' | 'xai' | 'custom';
 
 const FALLBACK_PROVIDERS: ChatProviderOption[] = [
@@ -194,6 +199,7 @@ const SECTIONS: {
   icon: typeof Clock3;
 }[] = [
   { id: 'preferences', label: 'Preferences', icon: Clock3 },
+  { id: 'organization', label: 'Organization', icon: Building2 },
   { id: 'api-key', label: 'AI', icon: KeyRound },
   { id: 'data', label: 'Data', icon: Files },
   { id: 'account', label: 'Account', icon: Shield },
@@ -326,9 +332,494 @@ function filesDeletedMessage(
   return `Deleted ${fileLabel} and ${folderLabel}.`;
 }
 
+function OrganizationSettings({
+  activeOrg,
+  onChanged,
+  onError,
+}: {
+  activeOrg: {
+    id: string;
+    name: string;
+    slug: string;
+    role: 'admin' | 'member';
+    imageUrl?: string | null;
+    joinsEnabled?: boolean;
+  } | null;
+  onChanged: (message: string) => Promise<void> | void;
+  onError: (message: string) => void;
+}) {
+  const [invite, setInvite] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
+  const [memberQuery, setMemberQuery] = useState('');
+  const [members, setMembers] = useState<
+    {
+      id: string;
+      name: string | null;
+      email: string;
+      avatarUrl: string | null;
+      role: 'admin' | 'member';
+      blocked: boolean;
+    }[]
+  >([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [memberPage, setMemberPage] = useState(1);
+  const [leaving, setLeaving] = useState<{ id: string; name: string } | null>(null);
+  const [leaveNeedsSuccessor, setLeaveNeedsSuccessor] = useState(false);
+  const [leaveCandidates, setLeaveCandidates] = useState<
+    { id: string; name: string | null; email: string; avatarUrl: string | null }[]
+  >([]);
+  const [successorId, setSuccessorId] = useState('');
+  const [leavePreviewLoading, setLeavePreviewLoading] = useState(false);
+  const { user } = useAuth();
+  const logoInputRef = useRef<HTMLInputElement>(null);
+  const link = activeOrg ? `${window.location.origin}/join/${activeOrg.slug}` : '';
+  const isAdmin = activeOrg?.role === 'admin';
+  const memberPageCount = Math.max(1, Math.ceil(members.length / 10));
+
+  useEffect(() => {
+    if (memberPage > memberPageCount) setMemberPage(memberPageCount);
+  }, [memberPage, memberPageCount]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      setMembersLoading(true);
+      void api
+        .listOrgMembers(memberQuery.trim())
+        .then((result) => {
+          if (!cancelled) setMembers(result.members);
+        })
+        .catch((err) => {
+          if (!cancelled) onError(err instanceof ApiError ? err.message : 'Could not load members');
+        })
+        .finally(() => {
+          if (!cancelled) setMembersLoading(false);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [isAdmin, memberQuery]);
+
+  async function updateMember(userId: string, action: 'admin' | 'member' | 'block' | 'unblock') {
+    setBusy(true);
+    try {
+      if (action === 'admin') await api.makeOrgAdmin(userId);
+      else if (action === 'member') await api.removeOrgAdmin(userId);
+      else if (action === 'block') await api.blockOrgMember(userId);
+      else await api.unblockOrgMember(userId);
+      const result = await api.listOrgMembers(memberQuery.trim());
+      setMembers(result.members);
+      await onChanged(
+        action === 'admin'
+          ? 'They are now an admin.'
+          : action === 'member'
+            ? 'They are a member again.'
+            : action === 'block'
+              ? 'They are blocked from this organization.'
+              : 'They can access this organization again.',
+      );
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not update that person');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openLeave(org: { id: string; name: string }) {
+    setLeaving(org);
+    setSuccessorId('');
+    setLeaveNeedsSuccessor(false);
+    setLeaveCandidates([]);
+    setLeavePreviewLoading(true);
+    try {
+      const preview = await api.leavePreview(org.id);
+      setLeaveNeedsSuccessor(preview.needsSuccessor);
+      setLeaveCandidates(preview.members);
+    } catch (err) {
+      setLeaving(null);
+      onError(err instanceof ApiError ? err.message : 'Could not prepare leaving');
+    } finally {
+      setLeavePreviewLoading(false);
+    }
+  }
+
+  async function onLeave() {
+    if (!leaving) return;
+    const { id, name } = leaving;
+    setBusy(true);
+    try {
+      const result = await api.leaveOrg(id, successorId || undefined);
+      setLeaving(null);
+      await onChanged(`You left ${name}.`);
+      if (result.leftActive) window.location.assign('/');
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not leave that organization');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onJoin(e: FormEvent) {
+    e.preventDefault();
+    const slug = invite.trim().split('/').filter(Boolean).pop() ?? '';
+    if (!slug) {
+      onError('Paste an organization invite link');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.joinOrg(slug);
+      await onChanged('You joined the organization.');
+      window.location.assign('/');
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not join that organization');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="settings-section-title">Organization</h2>
+      <p className="settings-section-desc">
+        {activeOrg?.role === 'admin'
+          ? 'Share this link so people join as members. They can ask questions, and only admins manage files and AI.'
+          : 'Join an organization with an invite link. You can switch workspaces from the sidebar.'}
+      </p>
+
+      {activeOrg?.role === 'admin' && (
+        <div className="mt-6">
+          <p className="text-sm font-medium">{activeOrg.name}</p>
+          <div className="mt-3 flex items-center gap-3">
+            {activeOrg.imageUrl ? (
+              <img
+                src={activeOrg.imageUrl}
+                alt=""
+                className="size-12 rounded-md object-cover ring-1 ring-[var(--color-line)]"
+              />
+            ) : (
+              <span className="flex size-12 items-center justify-center rounded-md bg-white/[0.06] text-sm font-semibold ring-1 ring-[var(--color-line)]">
+                {activeOrg.name.slice(0, 2).toUpperCase()}
+              </span>
+            )}
+            <div>
+              <input
+                ref={logoInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                className="sr-only"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  if (!file.type.startsWith('image/')) {
+                    onError('Please choose an image file.');
+                    return;
+                  }
+                  if (cropSrc) URL.revokeObjectURL(cropSrc);
+                  setCropSrc(URL.createObjectURL(file));
+                }}
+              />
+              <button type="button" className="btn btn-secondary" onClick={() => logoInputRef.current?.click()}>
+                <ImageUp className="icon-sm" aria-hidden />
+                {activeOrg.imageUrl ? 'Replace logo' : 'Upload logo'}
+              </button>
+              {activeOrg.imageUrl ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost ml-2"
+                  disabled={busy}
+                  onClick={() => {
+                    setBusy(true);
+                    void api
+                      .deleteOrgLogo()
+                      .then(() => onChanged('Organization logo removed.'))
+                      .catch((err) => onError(err instanceof ApiError ? err.message : 'Could not remove the logo'))
+                      .finally(() => setBusy(false));
+                  }}
+                >
+                  Remove
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <p className="text-sm text-[var(--color-ink-muted)]">
+              {activeOrg.joinsEnabled === false
+                ? 'New people cannot join with this link.'
+                : 'Anyone with this link can join as a member.'}
+            </p>
+            <button
+              type="button"
+              className="btn btn-secondary shrink-0"
+              disabled={busy}
+              onClick={() => {
+                const enabled = activeOrg.joinsEnabled === false;
+                setBusy(true);
+                void api
+                  .setOrgJoins(enabled)
+                  .then(() =>
+                    onChanged(enabled ? 'People can join with the link again.' : 'New joins are blocked.'),
+                  )
+                  .catch((err) => onError(err instanceof ApiError ? err.message : 'Could not update joining'))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {activeOrg.joinsEnabled === false ? 'Allow joining' : 'Block joining'}
+            </button>
+          </div>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            <input readOnly value={link} className="field" aria-label="Organization invite link" />
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={() => {
+                void navigator.clipboard.writeText(link).then(() => {
+                  setCopied(true);
+                  window.setTimeout(() => setCopied(false), 1500);
+                });
+              }}
+            >
+              {copied ? <Check className="icon" aria-hidden /> : null}
+              {copied ? 'Copied' : 'Copy link'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-8">
+        <h3 className="text-sm font-medium">Your organizations</h3>
+        <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
+          You can leave any organization. If you are the only admin and other people are still in it, choose the next admin in the confirmation. If another admin is already there, you can leave right away.
+        </p>
+        {(user?.memberships ?? []).length === 0 ? (
+          <p className="mt-4 text-sm text-[var(--color-ink-muted)]">You are not in an organization yet.</p>
+        ) : (
+          <ul className="mt-3 divide-y divide-[var(--color-line)] rounded-xl border border-[var(--color-line)]">
+            {(user?.memberships ?? []).map((org) => (
+              <li key={org.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+                {org.imageUrl ? (
+                  <img
+                    src={org.imageUrl}
+                    alt=""
+                    className="size-8 rounded-md object-cover ring-1 ring-[var(--color-line)]"
+                  />
+                ) : (
+                  <span className="flex size-8 items-center justify-center rounded-md bg-white/[0.06] text-xs font-semibold ring-1 ring-[var(--color-line)]">
+                    {org.name.slice(0, 2).toUpperCase()}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{org.name}</p>
+                  <p className="text-xs text-[var(--color-ink-muted)]">
+                    {org.role === 'admin' ? 'Admin' : 'Member'}
+                    {activeOrg?.id === org.id ? ' · Current' : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost shrink-0"
+                  disabled={busy}
+                  onClick={() => void openLeave(org)}
+                >
+                  Leave
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <form className="mt-6 space-y-3" onSubmit={onJoin}>
+        <label className="block text-sm font-medium">
+          Join with an invite
+          <input
+            required
+            value={invite}
+            onChange={(e) => setInvite(e.target.value)}
+            className="field mt-1.5"
+            placeholder="Paste the organization link"
+          />
+        </label>
+        <button type="submit" disabled={busy} className="btn btn-secondary">
+          Join organization
+        </button>
+      </form>
+
+      {isAdmin && (
+        <div className="mt-8">
+          <h3 className="text-sm font-medium">People</h3>
+          <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
+            Search by name or email. Admins can manage files and AI keys. Blocked people lose access and cannot rejoin.
+          </p>
+          <input
+            value={memberQuery}
+            onChange={(e) => {
+              setMemberQuery(e.target.value);
+              setMemberPage(1);
+            }}
+            className="field mt-3"
+            placeholder="Search by name or email"
+            aria-label="Search members"
+          />
+          {membersLoading && members.length === 0 ? (
+            <p className="mt-4 text-sm text-[var(--color-ink-muted)]">Loading people…</p>
+          ) : members.length === 0 ? (
+            <p className="mt-4 text-sm text-[var(--color-ink-muted)]">
+              {memberQuery.trim() ? 'No one matches that search.' : 'No one is in this organization yet.'}
+            </p>
+          ) : (
+            <>
+              <ul className="mt-3 divide-y divide-[var(--color-line)] rounded-xl border border-[var(--color-line)]">
+                {members.slice((memberPage - 1) * 10, memberPage * 10).map((person) => {
+                const isSelf = person.id === user?.id;
+                return (
+                  <li key={person.id} className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+                    <UserAvatar user={person} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {person.name || person.email}
+                        {isSelf ? <span className="font-normal text-[var(--color-ink-muted)]"> · You</span> : null}
+                      </p>
+                      {person.name ? (
+                        <p className="truncate text-xs text-[var(--color-ink-muted)]">{person.email}</p>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 text-xs text-[var(--color-ink-muted)]">
+                      {person.blocked ? 'Blocked' : person.role === 'admin' ? 'Admin' : 'Member'}
+                    </span>
+                    {!isSelf && !person.blocked && person.role === 'admin' ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost shrink-0"
+                        disabled={busy}
+                        onClick={() => void updateMember(person.id, 'member')}
+                      >
+                        Remove admin
+                      </button>
+                    ) : null}
+                    {!isSelf && !person.blocked && person.role !== 'admin' ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost shrink-0"
+                        disabled={busy}
+                        onClick={() => void updateMember(person.id, 'admin')}
+                      >
+                        Make admin
+                      </button>
+                    ) : null}
+                    {!isSelf ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost shrink-0"
+                        disabled={busy}
+                        onClick={() => void updateMember(person.id, person.blocked ? 'unblock' : 'block')}
+                      >
+                        {person.blocked ? 'Unblock' : 'Block'}
+                      </button>
+                    ) : null}
+                  </li>
+                );
+              })}
+              </ul>
+              {members.length > 10 ? (
+                <div className="mt-3 flex items-center justify-between gap-3">
+                  <p className="text-xs text-[var(--color-ink-muted)]">
+                    {(memberPage - 1) * 10 + 1}–{Math.min(memberPage * 10, members.length)} of {members.length}
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={memberPage <= 1}
+                      onClick={() => setMemberPage((page) => page - 1)}
+                    >
+                      <ChevronLeft className="icon-sm" aria-hidden />
+                      Previous
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      disabled={memberPage * 10 >= members.length}
+                      onClick={() => setMemberPage((page) => page + 1)}
+                    >
+                      Next
+                      <ChevronRight className="icon-sm" aria-hidden />
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={Boolean(leaving)}
+        title={leaving ? `Leave ${leaving.name}?` : 'Leave organization?'}
+        description={
+          leaveNeedsSuccessor
+            ? 'You are the only admin. Choose who becomes admin, then you can leave. They will get an email.'
+            : 'You will lose access to its files and chats. The organization keeps its files for everyone else.'
+        }
+        confirmLabel="Leave"
+        danger
+        busy={busy || leavePreviewLoading}
+        confirmDisabled={leaveNeedsSuccessor && !successorId}
+        onCancel={() => {
+          if (!busy) setLeaving(null);
+        }}
+        onConfirm={() => void onLeave()}
+      >
+        {leaveNeedsSuccessor ? (
+          <label className="mt-4 block text-sm font-medium">
+            Next admin
+            <MemberPicker
+              people={leaveCandidates}
+              value={successorId}
+              disabled={busy}
+              onChange={setSuccessorId}
+            />
+          </label>
+        ) : null}
+      </ConfirmDialog>
+      <AvatarCropDialog
+        open={Boolean(cropSrc)}
+        imageSrc={cropSrc}
+        busy={busy}
+        onCancel={() => {
+          if (cropSrc) URL.revokeObjectURL(cropSrc);
+          setCropSrc(null);
+        }}
+        onApply={(file) => {
+          if (cropSrc) URL.revokeObjectURL(cropSrc);
+          setCropSrc(null);
+          setBusy(true);
+          void api
+            .uploadOrgLogo(file)
+            .then(() => onChanged('Organization logo updated.'))
+            .catch((err) => onError(err instanceof ApiError ? err.message : 'Could not upload the logo'))
+            .finally(() => setBusy(false));
+        }}
+      />
+    </section>
+  );
+}
+
 export function SettingsPage() {
   const navigate = useNavigate();
   const { user, refreshUser, logout } = useAuth();
+  const canManage = user?.canManage !== false;
+  const showAiSettings = canManage;
+  const sections = SECTIONS.filter((item) => {
+    if (item.id === 'api-key' && !showAiSettings) return false;
+    return true;
+  });
   const { timeFormat, setTimeFormat, theme, resolvedTheme, setTheme } = usePreferences();
   const [section, setSection] = useState<SettingsSection>(sectionFromHash);
   const [apiKey, setApiKey] = useState('');
@@ -355,6 +846,13 @@ export function SettingsPage() {
     () => chatProviders.find((p) => p.id === chatProvider) ?? chatProviders[0],
     [chatProviders, chatProvider],
   );
+
+  useEffect(() => {
+    if (section === 'api-key' && !showAiSettings) {
+      setSection('preferences');
+      window.history.replaceState(null, '', '#preferences');
+    }
+  }, [section, showAiSettings]);
 
   useEffect(() => {
     const onHash = () => setSection(sectionFromHash());
@@ -735,7 +1233,7 @@ export function SettingsPage() {
 
         <div className="glass settings-layout mt-6 overflow-hidden">
           <nav className="settings-nav" aria-label="Settings sections">
-            {SECTIONS.map(({ id, label, icon: Icon }) => (
+            {sections.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
@@ -1314,7 +1812,9 @@ export function SettingsPage() {
               <section>
                 <h2 className="settings-section-title">Data</h2>
                 <p className="settings-section-desc">
-                  Clear chats or remove uploaded files from your Knowra account.
+                  {canManage
+                    ? 'Clear chats or remove uploaded files from your Knowra account.'
+                    : 'Clear your chat history. Files stay with the organization admin.'}
                 </p>
 
                 <div className="mt-6">
@@ -1336,6 +1836,7 @@ export function SettingsPage() {
                     </div>
                   </div>
 
+                  {canManage ? (
                   <div className="settings-row">
                     <div className="settings-row-label">
                       <p>Delete all files</p>
@@ -1360,8 +1861,24 @@ export function SettingsPage() {
                       </button>
                     </div>
                   </div>
+                  ) : null}
                 </div>
               </section>
+            )}
+
+            {section === 'organization' && (
+              <OrganizationSettings
+                activeOrg={user?.activeOrg ?? null}
+                onChanged={async (text) => {
+                  await refreshUser();
+                  setMessage(text);
+                  setError('');
+                }}
+                onError={(text) => {
+                  setError(text);
+                  setMessage('');
+                }}
+              />
             )}
 
             {section === 'account' && (
@@ -1420,7 +1937,7 @@ export function SettingsPage() {
                       <p>
                         {user?.deletionScheduledFor
                           ? `Deletion scheduled for ${new Date(user.deletionScheduledFor).toLocaleString()}. Cancel below to keep your account.`
-                          : 'Requires email OTP. After confirmation you have 7 days to cancel by signing in again.'}
+                          : 'Requires email OTP. If you are the only admin of an organization that still has other people, make someone else an admin first. After confirmation you have 7 days to cancel by signing in again.'}
                       </p>
                     </div>
                     <div className="settings-row-action">

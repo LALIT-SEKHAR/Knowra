@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, Navigate, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
   ArrowDown,
@@ -678,6 +678,8 @@ export function FilesPage() {
             aria-label={`Actions for ${folder.name}`}
             data-file-menu={menuId}
             style={{ top: menuPos.top, left: menuPos.left }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <button
               type="button"
@@ -791,6 +793,8 @@ export function FilesPage() {
             aria-label={`Actions for ${doc.name}`}
             data-file-menu={menuId}
             style={{ top: menuPos.top, left: menuPos.left }}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
             <button
               type="button"
@@ -912,6 +916,10 @@ export function FilesPage() {
   const emptyMessage = folderId
     ? 'This folder is empty. Create a folder or upload files to add them here.'
     : 'No files yet. Create a folder or upload a PDF, Word, Excel, or image file.';
+
+  if (user && user.canManage === false) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <div className="page-shell relative mx-auto max-w-5xl">

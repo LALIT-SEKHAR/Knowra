@@ -36,6 +36,7 @@ import { PdfViewer } from './PdfViewer';
 import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
 import { LiveReply } from './ThinkingIndicator';
 import { UserAvatar, displayName } from './UserAvatar';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { copyRenderedMessage } from '../utils/copyResponse';
 import { readViewCache, writeViewCache } from '../utils/viewCache';
 
@@ -134,7 +135,8 @@ function ShareResponseButton({ onShare }: { onShare: () => void }) {
 }
 
 export function WorkspacePage() {
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
+  const canManage = user?.canManage !== false;
   const { timeFormat } = usePreferences();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -195,10 +197,12 @@ export function WorkspacePage() {
     const requestId = ++searchRequestRef.current;
     setListsRefreshing(true);
     try {
-      const docsPromise = api.listDocuments().then((docsRes) => {
-        setDocuments(docsRes.documents);
-        writeViewCache('documents', docsRes.documents);
-      });
+      const docsPromise = canManage
+        ? api.listDocuments().then((docsRes) => {
+            setDocuments(docsRes.documents);
+            writeViewCache('documents', docsRes.documents);
+          })
+        : Promise.resolve();
       const chatsPromise = api.listConversations().then((chatsRes) => {
         setConversations(chatsRes.conversations);
         writeViewCache('conversations', chatsRes.conversations);
@@ -388,6 +392,12 @@ export function WorkspacePage() {
     () => documents.filter((d) => d.status === 'ready'),
     [documents],
   );
+  const readyCount = canManage ? readyDocs.length : (user?.readyDocumentCount ?? 0);
+
+  useEffect(() => {
+    if (canManage) return;
+    void refreshUser();
+  }, [canManage, user?.activeOrg?.id, refreshUser]);
 
   function onChatScroll(event: UIEvent<HTMLDivElement>) {
     const el = event.currentTarget;
@@ -410,8 +420,12 @@ export function WorkspacePage() {
           : 'Add your OpenAI API key in Settings → AI before chatting.',
       );      return;
     }
-    if (readyDocs.length === 0) {
-      setError('Upload and process at least one file before chatting.');
+    if (readyCount === 0) {
+      setError(
+        canManage
+          ? 'Upload and process at least one file before chatting.'
+          : 'This organization has no ready files to ask about yet.',
+      );
       return;
     }
     setBusy(true);
@@ -505,14 +519,17 @@ export function WorkspacePage() {
       </div>
 
       <div className="px-3 pt-2">
+        <WorkspaceSwitcher user={user} />
         <button type="button" onClick={startNewChat} className="nav-item">
           <MessageSquarePlus className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
           <span className="truncate">New Chat</span>
         </button>
-        <Link to="/files" className="nav-item" onClick={() => setDrawerOpen(false)}>
-          <Files className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
-          <span className="truncate">Files</span>
-        </Link>
+        {canManage ? (
+          <Link to="/files" className="nav-item" onClick={() => setDrawerOpen(false)}>
+            <Files className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+            <span className="truncate">Files</span>
+          </Link>
+        ) : null}
       </div>
 
       <div className="px-3 pt-3">
@@ -703,16 +720,22 @@ export function WorkspacePage() {
           <span className="truncate">Library chat</span>
         </h2>
         <p className="mt-0.5 text-xs text-[var(--color-ink-muted)]">
-          {readyDocs.length > 0
-            ? `Answers from all ${readyDocs.length} ready document${readyDocs.length === 1 ? '' : 's'}`
-            : 'Upload a PDF, Word, Excel, or image file to start asking questions'}
+          {readyCount > 0
+            ? canManage
+              ? `Answers from all ${readyCount} ready document${readyCount === 1 ? '' : 's'}`
+              : `Answers from this organization's ${readyCount} ready document${readyCount === 1 ? '' : 's'}`
+            : canManage
+              ? 'Upload a PDF, Word, Excel, or image file to start asking questions'
+              : 'Waiting for the organization admin to add a ready file'}
           {selectedDoc ? ` · Viewing ${selectedDoc.name}` : ''}
         </p>
       </div>
 
       {!user?.canChat && (
         <div className="notice-warn m-4 rounded-[var(--radius-control)] px-3 py-2.5 text-sm backdrop-blur-sm">
-          {!user?.hasOpenAIKey ? (
+          {user?.activeOrg && user.activeOrg.role === 'member' ? (
+            <>Your organization admin needs to finish AI setup before chat can search documents.</>
+          ) : !user?.hasOpenAIKey ? (
             <>
               Add your OpenAI key in{' '}
               <Link
@@ -857,17 +880,19 @@ export function WorkspacePage() {
             ref={questionInputRef}
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            disabled={!user?.canChat || readyDocs.length === 0 || busy}
+            disabled={!user?.canChat || readyCount === 0 || busy}
             placeholder={
-              readyDocs.length > 0
+              readyCount > 0
                 ? 'Ask anything across your documents…'
-                : 'Upload a ready file to start chatting…'
+                : canManage
+                  ? 'Upload a ready file to start chatting…'
+                  : 'No ready files in this organization yet…'
             }
             className="field min-w-0 flex-1"
           />
           <button
             type="submit"
-            disabled={!user?.canChat || readyDocs.length === 0 || busy || !question.trim()}
+            disabled={!user?.canChat || readyCount === 0 || busy || !question.trim()}
             className="btn btn-primary shrink-0 !px-3.5 sm:!px-4"
           >
             <Send className="icon" aria-hidden />

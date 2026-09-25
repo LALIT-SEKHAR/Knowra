@@ -115,15 +115,102 @@ export const api = {
       body: JSON.stringify({ email }),
     }),
 
-  verifyOtp: (email: string, code: string) =>
+  verifyOtp: (
+    email: string,
+    code: string,
+    extra?: { orgName?: string; joinSlug?: string },
+  ) =>
     request<{
       token: string;
+      isNew?: boolean;
       deletionCancelled?: boolean;
       user: { id: string; email: string; name?: string; deletionScheduledFor?: string | null };
     }>('/auth/verify-otp', {
       method: 'POST',
-      body: JSON.stringify({ email, code }),
+      body: JSON.stringify({ email, code, ...extra }),
     }),
+
+  checkOrgName: (name: string) =>
+    request<{ available: boolean; name: string; slug: string }>(
+      `/orgs/availability?name=${encodeURIComponent(name)}`,
+    ),
+
+  orgInvite: (slug: string) =>
+    request<{ organization: { name: string; slug: string; joinsEnabled: boolean } }>(
+      `/orgs/invite/${encodeURIComponent(slug)}`,
+    ),
+
+  createOrg: (name: string) =>
+    request<{ organization: { id: string; name: string; slug: string }; role: string }>('/orgs', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  joinOrg: (slug: string) =>
+    request<{ organization: { id: string; name: string; slug: string }; role: string }>(
+      `/orgs/join/${encodeURIComponent(slug)}`,
+      { method: 'POST' },
+    ),
+
+  switchOrg: (orgId: string | null) =>
+    request<{ ok: boolean; activeOrgId: string | null }>('/orgs/active', {
+      method: 'PUT',
+      body: JSON.stringify({ orgId }),
+    }),
+
+  leavePreview: (orgId: string) =>
+    request<{
+      needsSuccessor: boolean;
+      members: { id: string; name: string | null; email: string; avatarUrl: string | null }[];
+    }>(`/orgs/${orgId}/leave`),
+
+  leaveOrg: (orgId: string, successorId?: string) =>
+    request<{ ok: boolean; leftActive: boolean }>(`/orgs/${orgId}/leave`, {
+      method: 'POST',
+      body: JSON.stringify(successorId ? { successorId } : {}),
+    }),
+
+  uploadOrgLogo: (file: File) => {
+    const form = new FormData();
+    form.append('logo', file);
+    return request<{ organization: { id: string; name: string; slug: string; imageUrl: string } }>(
+      '/orgs/logo',
+      { method: 'POST', body: form },
+    );
+  },
+
+  deleteOrgLogo: () =>
+    request<{ organization: { id: string; imageUrl: null } }>('/orgs/logo', { method: 'DELETE' }),
+
+  setOrgJoins: (enabled: boolean) =>
+    request<{ joinsEnabled: boolean }>('/orgs/joins', {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  listOrgMembers: (q = '') =>
+    request<{
+      members: {
+        id: string;
+        name: string | null;
+        email: string;
+        avatarUrl: string | null;
+        role: 'admin' | 'member';
+        blocked: boolean;
+      }[];
+    }>(`/orgs/members${q ? `?q=${encodeURIComponent(q)}` : ''}`),
+
+  makeOrgAdmin: (userId: string) =>
+    request<{ ok: boolean }>(`/orgs/members/${userId}/admin`, { method: 'POST' }),
+
+  removeOrgAdmin: (userId: string) =>
+    request<{ ok: boolean }>(`/orgs/members/${userId}/member`, { method: 'POST' }),
+
+  blockOrgMember: (userId: string) =>
+    request<{ ok: boolean }>(`/orgs/members/${userId}/block`, { method: 'POST' }),
+
+  unblockOrgMember: (userId: string) =>
+    request<{ ok: boolean }>(`/orgs/members/${userId}/unblock`, { method: 'POST' }),
 
   me: () => request<import('../types').User>('/auth/me'),
 

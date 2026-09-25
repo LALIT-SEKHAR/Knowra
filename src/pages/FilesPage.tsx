@@ -38,6 +38,7 @@ import { MoveItemDialog, NameDialog, type MoveSubject } from '../components/File
 import { FileActivity } from '../components/FileActivity';
 import { FilesGridSkeleton, FilesListSkeleton, FilesTableSkeleton } from '../components/Skeleton';
 import { describeProcessing, describeUpload, isActiveDocument, useActivityClock } from '../utils/fileActivity';
+import { readViewCache, writeViewCache } from '../utils/viewCache';
 
 type FilesView = 'list' | 'grid';
 type SortKey = 'name' | 'modified' | 'size' | 'type';
@@ -135,20 +136,32 @@ function directorySegments(file: File) {
   return relative.slice(0, -1);
 }
 
+type FilesSnapshot = {
+  documents: KnowraDocument[];
+  folders: KnowraFolder[];
+  breadcrumb: FolderPathSegment[];
+};
+
+function filesCacheKey(folderId: string | null, query: string) {
+  return `files:${folderId ?? 'root'}:${query.trim().toLowerCase()}`;
+}
+
 export function FilesPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const folderId = searchParams.get('folder');
-  const [documents, setDocuments] = useState<KnowraDocument[]>([]);
-  const [folders, setFolders] = useState<KnowraFolder[]>([]);
-  const [breadcrumb, setBreadcrumb] = useState<FolderPathSegment[]>([]);
+  const initialFiles = readViewCache<FilesSnapshot>(filesCacheKey(folderId, ''));
+  const [documents, setDocuments] = useState<KnowraDocument[]>(() => initialFiles?.documents ?? []);
+  const [folders, setFolders] = useState<KnowraFolder[]>(() => initialFiles?.folders ?? []);
+  const [breadcrumb, setBreadcrumb] = useState<FolderPathSegment[]>(() => initialFiles?.breadcrumb ?? []);
   const [filesView, setFilesView] = useState<FilesView>(() => readFilesView());
   const [sortKey, setSortKey] = useState<SortKey>(() => readFilesSort().key);
   const [sortDir, setSortDir] = useState<SortDir>(() => readFilesSort().dir);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const moreRef = useRef<HTMLParagraphElement>(null);
   const [query, setQuery] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => initialFiles === null);
+  const [refreshing, setRefreshing] = useState(false);
   const [preparingFolders, setPreparingFolders] = useState(false);
   const [error, setError] = useState('');
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
@@ -179,12 +192,20 @@ export function FilesPage() {
   const load = useCallback(async (q?: string) => {
     const request = ++loadSeq.current;
     setError('');
+    setRefreshing(true);
     try {
       const res = await api.listDocuments(q, folderId ?? 'root');
       if (request !== loadSeq.current) return;
+      const nextFolders = res.folders ?? [];
+      const nextBreadcrumb = res.breadcrumb ?? [];
       setDocuments(res.documents);
-      setFolders(res.folders ?? []);
-      setBreadcrumb(res.breadcrumb ?? []);
+      setFolders(nextFolders);
+      setBreadcrumb(nextBreadcrumb);
+      writeViewCache(filesCacheKey(folderId, q ?? ''), {
+        documents: res.documents,
+        folders: nextFolders,
+        breadcrumb: nextBreadcrumb,
+      });
     } catch (err) {
       if (request !== loadSeq.current) return;
       const message = err instanceof ApiError ? err.message : 'Failed to load files';
@@ -195,7 +216,10 @@ export function FilesPage() {
         setBreadcrumb([]);
       }
     } finally {
-      if (request === loadSeq.current) setLoading(false);
+      if (request === loadSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [folderId]);
 
@@ -207,7 +231,25 @@ export function FilesPage() {
     const trimmed = query.trim();
     if (seenFolder.current !== folderId) {
       seenFolder.current = folderId;
-      setLoading(true);
+      const cached = readViewCache<FilesSnapshot>(filesCacheKey(folderId, trimmed));
+      if (cached) {
+        setDocuments(cached.documents);
+        setFolders(cached.folders);
+        setBreadcrumb(cached.breadcrumb);
+        setLoading(false);
+      } else {
+        setDocuments([]);
+        setFolders([]);
+        setBreadcrumb([]);
+        setLoading(true);
+      }
+    } else {
+      const cached = readViewCache<FilesSnapshot>(filesCacheKey(folderId, trimmed));
+      if (cached) {
+        setDocuments(cached.documents);
+        setFolders(cached.folders);
+        setBreadcrumb(cached.breadcrumb);
+      }
     }
     const handle = window.setTimeout(() => {
       void load(trimmed || undefined);
@@ -266,7 +308,6 @@ export function FilesPage() {
     setQuery('');
     setOpenMenuId(null);
     if ((id ?? null) === (folderId ?? null)) {
-      setLoading(true);
       void load();
       return;
     }
@@ -450,6 +491,11 @@ export function FilesPage() {
     setDeleteTarget({ kind: 'folder', folder });
   }
 
+  function requestDeleteFile(doc: KnowraDocument) {
+    setOpenMenuId(null);
+    setDeleteTarget({ kind: 'file', doc });
+  }
+
   async function confirmDelete() {
     if (!deleteTarget) return;
     setDeleteBusy(true);
@@ -467,6 +513,7 @@ export function FilesPage() {
   }
 
   function requestFolderName(request: NameRequest) {
+    setOpenMenuId(null);
     setNameError('');
     setNameRequest(request);
   }
@@ -480,7 +527,7 @@ export function FilesPage() {
       setNameRequest(null);
       await load(query || undefined);
     } catch (err) {
-      setNameError(err instanceof ApiError ? err.message : 'Could not save folder');
+      setNameError(err instanceof ApiError ? err.message : 'Could not save');
     } finally {
       setNameBusy(false);
     }
@@ -710,7 +757,125 @@ export function FilesPage() {
     );
   }
 
+  function FileActions({ doc }: { doc: KnowraDocument }) {
+    const menuId = `file:${doc.id}`;
+    const open = openMenuId === menuId;
+    const buttonRef = useRef<HTMLButtonElement>(null);
+    const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+
+    useLayoutEffect(() => {
+      if (!open || !buttonRef.current) {
+        setMenuPos(null);
+        return;
+      }
+      const rect = buttonRef.current.getBoundingClientRect();
+      if (rect.width < 1 || rect.height < 1) {
+        setMenuPos(null);
+        return;
+      }
+      const menuWidth = 168;
+      const gap = 6;
+      const left = Math.min(
+        Math.max(8, rect.right - menuWidth),
+        window.innerWidth - menuWidth - 8,
+      );
+      const top = Math.min(rect.bottom + gap, window.innerHeight - 8);
+      setMenuPos({ top, left });
+    }, [open]);
+
+    const menu = open && menuPos
+      ? createPortal(
+          <div
+            className="file-action-menu"
+            role="menu"
+            aria-label={`Actions for ${doc.name}`}
+            data-file-menu={menuId}
+            style={{ top: menuPos.top, left: menuPos.left }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              className="file-action-item"
+              onClick={() => {
+                setOpenMenuId(null);
+                openFile(doc);
+              }}
+            >
+              <ExternalLink className="icon-sm" aria-hidden />
+              Open
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="file-action-item"
+              onClick={() =>
+                requestFolderName({
+                  title: 'Rename file',
+                  initial: doc.name,
+                  confirmLabel: 'Rename',
+                  submit: async (name) => {
+                    await api.renameDocument(doc.id, name);
+                  },
+                })
+              }
+            >
+              <Pencil className="icon-sm" aria-hidden />
+              Rename
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="file-action-item"
+              onClick={() =>
+                void openMove({
+                  kind: 'file',
+                  id: doc.id,
+                  name: doc.name,
+                  currentFolderId: doc.folderId ?? null,
+                })
+              }
+            >
+              <Folder className="icon-sm" aria-hidden />
+              Move
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              className="file-action-item file-action-item-danger"
+              onClick={() => requestDeleteFile(doc)}
+            >
+              <Trash2 className="icon-sm" aria-hidden />
+              Delete
+            </button>
+          </div>,
+          document.body,
+        )
+      : null;
+
+    return (
+      <div className="inline-flex" data-file-menu={menuId}>
+        <button
+          ref={buttonRef}
+          type="button"
+          className="chip chip-icon"
+          aria-label={`Actions for ${doc.name}`}
+          aria-haspopup="menu"
+          aria-expanded={open && Boolean(menuPos)}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpenMenuId(open ? null : menuId);
+          }}
+        >
+          <MoreVertical className="icon-sm" aria-hidden />
+        </button>
+        {menu}
+      </div>
+    );
+  }
+
   const searching = Boolean(query.trim());
+  const showFilesSkeleton =
+    loading && documents.length === 0 && folders.length === 0 && pendingUploads.length === 0;
   const empty =
     !loading && !searching && rows.length === 0 && folders.length === 0 && pendingUploads.length === 0;
   const noMatches =
@@ -936,6 +1101,9 @@ export function FilesPage() {
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-line)] px-3 py-2.5 sm:px-4">
             <div className="flex items-center gap-1.5">
+              {refreshing && !showFilesSkeleton ? (
+                <span className="text-xs text-[var(--color-ink-muted)]">Updating…</span>
+              ) : null}
               <label className="sr-only" htmlFor="files-sort">
                 Sort by
               </label>
@@ -991,8 +1159,8 @@ export function FilesPage() {
             </div>
           </div>
           {filesView === 'grid' ? (
-            <div aria-busy={loading && pendingUploads.length === 0}>
-              {loading && pendingUploads.length === 0 ? (
+            <div aria-busy={showFilesSkeleton}>
+              {showFilesSkeleton ? (
                 <FilesGridSkeleton />
               ) : empty ? (
                 <p className="px-4 py-8 text-sm text-[var(--color-ink-muted)]">{emptyMessage}</p>
@@ -1076,7 +1244,12 @@ export function FilesPage() {
                           onClick={() => openFile(doc)}
                         />
                         <div className="pointer-events-none relative flex min-h-36 flex-1 flex-col p-3">
-                          <FileText className="size-7 shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                          <div className="flex items-start justify-between gap-2">
+                            <FileText className="size-7 shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                            <div className="pointer-events-auto relative z-10">
+                              <FileActions doc={doc} />
+                            </div>
+                          </div>
                           <p className="mt-3 line-clamp-2 text-sm font-medium">{doc.name}</p>
                           {place ? (
                             <p className="mt-1 truncate text-xs text-[var(--color-ink-muted)]">{place}</p>
@@ -1112,9 +1285,9 @@ export function FilesPage() {
           <>
           <ul
             className="divide-y divide-[var(--color-line)] md:hidden"
-            aria-busy={loading && pendingUploads.length === 0}
+            aria-busy={showFilesSkeleton}
           >
-            {loading && pendingUploads.length === 0 ? (
+            {showFilesSkeleton ? (
               <FilesListSkeleton />
             ) : empty ? (
               <li className="px-4 py-8 text-sm text-[var(--color-ink-muted)]">
@@ -1188,7 +1361,8 @@ export function FilesPage() {
                       aria-label={`Open ${doc.name}`}
                       onClick={() => openFile(doc)}
                     />
-                    <div className="pointer-events-none relative min-w-0 px-4 py-4">
+                    <div className="pointer-events-none relative flex items-start justify-between gap-3 px-4 py-4">
+                      <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-2 font-medium">
                         <FileText className="icon shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
                         <span className="truncate">{doc.name}</span>
@@ -1213,6 +1387,10 @@ export function FilesPage() {
                           })}
                         />
                       ) : null}
+                      </div>
+                      <div className="pointer-events-auto relative z-10">
+                        <FileActions doc={doc} />
+                      </div>
                     </div>
                   </li>
                   );
@@ -1276,8 +1454,8 @@ export function FilesPage() {
                   <th className="px-4 py-3.5 font-medium">Actions</th>
                 </tr>
               </thead>
-              <tbody aria-busy={loading && pendingUploads.length === 0}>
-                {loading && pendingUploads.length === 0 ? (
+              <tbody aria-busy={showFilesSkeleton}>
+                {showFilesSkeleton ? (
                   <FilesTableSkeleton />
                 ) : empty ? (
                   <tr>
@@ -1393,7 +1571,9 @@ export function FilesPage() {
                           )}
                         </td>
                         <td className="px-4 py-3.5">{formatRelativeDate(doc.updatedAt)}</td>
-                        <td className="px-4 py-3.5" />
+                        <td className="px-4 py-3.5">
+                          <FileActions doc={doc} />
+                        </td>
                       </tr>
                       );
                     })}

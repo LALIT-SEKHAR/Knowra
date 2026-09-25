@@ -37,6 +37,7 @@ import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
 import { LiveReply } from './ThinkingIndicator';
 import { UserAvatar, displayName } from './UserAvatar';
 import { copyRenderedMessage } from '../utils/copyResponse';
+import { readViewCache, writeViewCache } from '../utils/viewCache';
 
 const CHAT_PAGE_SIZE = 20;
 
@@ -142,9 +143,16 @@ export function WorkspacePage() {
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'document'>('chat');
-  const [documents, setDocuments] = useState<KnowraDocument[]>([]);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [listsLoading, setListsLoading] = useState(true);
+  const [documents, setDocuments] = useState<KnowraDocument[]>(
+    () => readViewCache<KnowraDocument[]>('documents') ?? [],
+  );
+  const [conversations, setConversations] = useState<Conversation[]>(
+    () => readViewCache<Conversation[]>('conversations') ?? [],
+  );
+  const [listsLoading, setListsLoading] = useState(
+    () => readViewCache<Conversation[]>('conversations') === null,
+  );
+  const [listsRefreshing, setListsRefreshing] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -185,16 +193,24 @@ export function WorkspacePage() {
   async function refreshLists() {
     const query = chatQueryRef.current.trim();
     const requestId = ++searchRequestRef.current;
-    const [docsRes, chatsRes] = await Promise.all([
-      api.listDocuments(),
-      api.listConversations(),
-    ]);
-    setDocuments(docsRes.documents);
-    setConversations(chatsRes.conversations);
-    if (!query || chatQueryRef.current.trim() !== query) return;
-    const searchRes = await api.listConversations(query);
-    if (requestId !== searchRequestRef.current || chatQueryRef.current.trim() !== query) return;
-    setChatSearch({ query: query.toLowerCase(), conversations: searchRes.conversations });
+    setListsRefreshing(true);
+    try {
+      const docsPromise = api.listDocuments().then((docsRes) => {
+        setDocuments(docsRes.documents);
+        writeViewCache('documents', docsRes.documents);
+      });
+      const chatsPromise = api.listConversations().then((chatsRes) => {
+        setConversations(chatsRes.conversations);
+        writeViewCache('conversations', chatsRes.conversations);
+      });
+      await Promise.all([docsPromise, chatsPromise]);
+      if (!query || chatQueryRef.current.trim() !== query) return;
+      const searchRes = await api.listConversations(query);
+      if (requestId !== searchRequestRef.current || chatQueryRef.current.trim() !== query) return;
+      setChatSearch({ query: query.toLowerCase(), conversations: searchRes.conversations });
+    } finally {
+      setListsRefreshing(false);
+    }
   }
 
   useEffect(() => {
@@ -274,12 +290,15 @@ export function WorkspacePage() {
     followChatRef.current = true;
     setTypingMessageId(null);
     const loadId = ++chatLoadIdRef.current;
-    setMessagesLoading(true);
+    const cached = readViewCache<ChatMessage[]>(`messages:${selectedChatId}`);
+    setMessages(cached ?? []);
+    setMessagesLoading(cached === null);
     void api
       .getConversation(selectedChatId)
       .then((res) => {
         if (loadId !== chatLoadIdRef.current) return;
         setMessages(res.messages);
+        writeViewCache(`messages:${selectedChatId}`, res.messages);
         if (res.conversation.documentId && res.conversation.documentId !== selectedDocId) {
           setSearchParams({
             doc: res.conversation.documentId,
@@ -422,6 +441,7 @@ export function WorkspacePage() {
       if (selectedDocId) nextParams.doc = selectedDocId;
       setSearchParams(nextParams);
       setMessages(conv.messages);
+      writeViewCache(`messages:${res.conversationId}`, conv.messages);
       setTypingMessageId(reply?.id ?? null);
       await refreshLists();
     } catch (err) {
@@ -496,7 +516,12 @@ export function WorkspacePage() {
       </div>
 
       <div className="px-3 pt-3">
-        <h2 className="mb-1.5 px-2 text-sm font-semibold text-[var(--color-ink-muted)]">Chats</h2>
+        <h2 className="mb-1.5 px-2 text-sm font-semibold text-[var(--color-ink-muted)]">
+          Chats
+          {listsRefreshing && !listsLoading ? (
+            <span className="ml-2 text-[13px] font-normal">Updating…</span>
+          ) : null}
+        </h2>
         <div className="relative mb-2">
           <Search
             className="pointer-events-none absolute top-1/2 left-2.5 icon-sm -translate-y-1/2 text-[var(--color-ink-muted)]"

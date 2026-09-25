@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { api, clearToken, getToken, setToken } from '../services/api';
 import type { User } from '../types';
+import { clearViewCache } from '../utils/viewCache';
 
 type AuthContextValue = {
   user: User | null;
@@ -60,6 +61,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // ignore
     }
     clearToken();
+    clearViewCache();
     setUser(null);
   }, []);
 

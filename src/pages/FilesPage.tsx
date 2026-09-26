@@ -161,7 +161,6 @@ export function FilesPage() {
   const moreRef = useRef<HTMLParagraphElement>(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(() => initialFiles === null);
-  const [refreshing, setRefreshing] = useState(false);
   const [preparingFolders, setPreparingFolders] = useState(false);
   const [error, setError] = useState('');
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
@@ -192,7 +191,6 @@ export function FilesPage() {
   const load = useCallback(async (q?: string) => {
     const request = ++loadSeq.current;
     setError('');
-    setRefreshing(true);
     try {
       const res = await api.listDocuments(q, folderId ?? 'root');
       if (request !== loadSeq.current) return;
@@ -216,10 +214,7 @@ export function FilesPage() {
         setBreadcrumb([]);
       }
     } finally {
-      if (request === loadSeq.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
+      if (request === loadSeq.current) setLoading(false);
     }
   }, [folderId]);
 
@@ -932,18 +927,17 @@ export function FilesPage() {
         </Link>
 
         <div className="glass mt-4 p-4 sm:p-6">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-            <div className="min-w-0">
-              <h1 className="inline-flex items-center gap-2.5 font-[family-name:var(--font-display)] text-2xl tracking-tight sm:text-3xl">
-                <BrandMark size="sm" showWordmark={false} />
-                Files
-              </h1>
-              <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
-                Folders for PDFs, Word, Excel, and images.
-              </p>
-            </div>
-            <div className="flex w-full min-w-0 flex-col gap-2 sm:w-auto sm:items-end">
-              <div className="flex w-full items-center gap-2 sm:w-auto">
+          <div className="flex flex-col gap-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h1 className="inline-flex items-center gap-2.5 font-[family-name:var(--font-display)] text-2xl tracking-tight sm:text-3xl">
+                  <BrandMark size="sm" showWordmark={false} />
+                  Files
+                </h1>
+                <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
+                  Folders for PDFs, Word, Excel, and images.
+                </p>
+              </div>
               <Link
                 to="/profile"
                 className="inline-flex shrink-0 items-center gap-2 rounded-lg px-1.5 py-1 text-sm text-[var(--color-ink-muted)] transition-colors hover:bg-white/[0.04] hover:text-[var(--color-ink)]"
@@ -952,41 +946,42 @@ export function FilesPage() {
                 <UserAvatar user={user} size="sm" />
                 <span className="hidden sm:inline">{displayName(user)}</span>
               </Link>
-              <div className="relative min-w-0 flex-1 sm:w-56 sm:flex-none">
-                  <Search
-                    className="pointer-events-none absolute top-1/2 left-3 icon -translate-y-1/2 text-[var(--color-ink-muted)]"
-                    aria-hidden
-                  />
-                  <input
-                    type="search"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape' && query) {
-                        e.preventDefault();
-                        setQuery('');
-                      }
-                    }}
-                    placeholder="Search files and folders"
-                    aria-label="Search files and folders"
-                    className={clsx(
-                      'field chat-search !min-h-11 w-full !pl-10',
-                      query && '!pr-10',
-                    )}
-                  />
-                  {query ? (
-                    <button
-                      type="button"
-                      className="absolute top-1/2 right-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-[var(--color-ink-muted)] hover:bg-white/[0.08] hover:text-[var(--color-ink)]"
-                      aria-label="Clear search"
-                      onClick={() => setQuery('')}
-                    >
-                      <X className="icon-sm" aria-hidden />
-                    </button>
-                  ) : null}
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative min-w-0 flex-1">
+                <Search
+                  className="pointer-events-none absolute top-1/2 left-3 icon -translate-y-1/2 text-[var(--color-ink-muted)]"
+                  aria-hidden
+                />
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape' && query) {
+                      e.preventDefault();
+                      setQuery('');
+                    }
+                  }}
+                  placeholder="Search files and folders"
+                  aria-label="Search files and folders"
+                  className={clsx(
+                    'field chat-search !min-h-11 w-full !pl-10',
+                    query && '!pr-10',
+                  )}
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    className="absolute top-1/2 right-1.5 z-10 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-[var(--color-ink-muted)] hover:bg-white/[0.08] hover:text-[var(--color-ink)]"
+                    aria-label="Clear search"
+                    onClick={() => setQuery('')}
+                  >
+                    <X className="icon-sm" aria-hidden />
+                  </button>
+                ) : null}
               </div>
-              </div>
-              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end">
+              <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:shrink-0">
               <button
                 type="button"
                 className="btn btn-secondary !px-3"
@@ -1109,9 +1104,6 @@ export function FilesPage() {
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-line)] px-3 py-2.5 sm:px-4">
             <div className="flex items-center gap-1.5">
-              {refreshing && !showFilesSkeleton ? (
-                <span className="text-xs text-[var(--color-ink-muted)]">Updating…</span>
-              ) : null}
               <label className="sr-only" htmlFor="files-sort">
                 Sort by
               </label>

@@ -5,7 +5,6 @@ import {
   Check,
   ChevronDown,
   Copy,
-  FileText,
   Files,
   LogOut,
   Menu,
@@ -21,18 +20,13 @@ import {
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import type { ChatMessage, Conversation, KnowraDocument } from '../types';
-import { isOfficeMime } from '../utils/fileTypes';
 import { formatMessageTime, groupByRecency } from '../utils/format';
-import { describeProcessing, isActiveDocument, useActivityClock } from '../utils/fileActivity';
 import { usePreferences } from '../hooks/usePreferences';
 import { BrandMark } from './BrandMark';
 import { KnowraMark } from './KnowraMark';
 import { ChatMarkdown } from './ChatMarkdown';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ShareResponseDialog } from './ShareResponseDialog';
-import { FileActivity } from './FileActivity';
-import { OfficePreview } from './OfficePreview';
-import { PdfViewer } from './PdfViewer';
 import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
 import { LiveReply } from './ThinkingIndicator';
 import { UserAvatar, displayName } from './UserAvatar';
@@ -140,11 +134,9 @@ export function WorkspacePage() {
   const { timeFormat } = usePreferences();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const selectedDocId = searchParams.get('doc');
   const selectedChatId = searchParams.get('conversation');
 
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [mobilePanel, setMobilePanel] = useState<'chat' | 'document'>('chat');
   const [documents, setDocuments] = useState<KnowraDocument[]>(
     () => readViewCache<KnowraDocument[]>('documents') ?? [],
   );
@@ -161,7 +153,6 @@ export function WorkspacePage() {
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [highlightPage, setHighlightPage] = useState<number | null>(null);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [shareText, setShareText] = useState<string | null>(null);
   const closeShare = useCallback(() => setShareText(null), []);
@@ -187,10 +178,12 @@ export function WorkspacePage() {
   const refocusQuestionRef = useRef(false);
   chatQueryRef.current = chatQuery;
 
-  const selectedDoc = useMemo(
-    () => documents.find((d) => d.id === selectedDocId) ?? null,
-    [documents, selectedDocId],
-  );
+  useEffect(() => {
+    if (!searchParams.has('doc')) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('doc');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   async function refreshLists() {
     const query = chatQueryRef.current.trim();
@@ -303,12 +296,6 @@ export function WorkspacePage() {
         if (loadId !== chatLoadIdRef.current) return;
         setMessages(res.messages);
         writeViewCache(`messages:${selectedChatId}`, res.messages);
-        if (res.conversation.documentId && res.conversation.documentId !== selectedDocId) {
-          setSearchParams({
-            doc: res.conversation.documentId,
-            conversation: selectedChatId,
-          });
-        }
       })
       .catch((err) => {
         if (loadId !== chatLoadIdRef.current) return;
@@ -317,7 +304,7 @@ export function WorkspacePage() {
       .finally(() => {
         if (loadId === chatLoadIdRef.current) setMessagesLoading(false);
       });
-  }, [selectedChatId, selectedDocId, setSearchParams]);
+  }, [selectedChatId]);
 
   useLayoutEffect(() => {
     if (!followChatRef.current || messagesLoading) return;
@@ -325,12 +312,6 @@ export function WorkspacePage() {
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages, busy, typingMessageId, messagesLoading]);
-
-  useEffect(() => {
-    if (!selectedDoc && mobilePanel === 'document') {
-      setMobilePanel('chat');
-    }
-  }, [selectedDoc, mobilePanel]);
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -353,21 +334,9 @@ export function WorkspacePage() {
     };
   }, [accountMenuOpen]);
 
-  function closeDocumentView() {
-    const next = new URLSearchParams();
-    if (selectedChatId) next.set('conversation', selectedChatId);
-    setSearchParams(next, { replace: true });
-    setHighlightPage(null);
-    setMobilePanel('chat');
-  }
-
   function selectConversation(c: Conversation) {
-    const params: Record<string, string> = { conversation: c.id };
-    if (c.documentId) params.doc = c.documentId;
-    else if (selectedDocId) params.doc = selectedDocId;
-    setSearchParams(params);
+    setSearchParams({ conversation: c.id });
     setDrawerOpen(false);
-    setMobilePanel('chat');
   }
 
   function startNewChat() {
@@ -377,14 +346,10 @@ export function WorkspacePage() {
     setQuestion('');
     setMessages([]);
     setMessagesLoading(false);
-    setHighlightPage(null);
     setTypingMessageId(null);
     setBusy(false);
 
-    const next = new URLSearchParams();
-    if (selectedDocId) next.set('doc', selectedDocId);
-    setSearchParams(next, { replace: true });
-    setMobilePanel('chat');
+    setSearchParams({}, { replace: true });
     setDrawerOpen(false);
   }
 
@@ -452,7 +417,6 @@ export function WorkspacePage() {
         skipConversationLoadRef.current = res.conversationId;
       }
       const nextParams: Record<string, string> = { conversation: res.conversationId };
-      if (selectedDocId) nextParams.doc = selectedDocId;
       setSearchParams(nextParams);
       setMessages(conv.messages);
       writeViewCache(`messages:${res.conversationId}`, conv.messages);
@@ -505,12 +469,6 @@ export function WorkspacePage() {
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [hasMoreChats, listsLoading, chatLimit]);
-
-  const activityNow = useActivityClock(documents.some((doc) => isActiveDocument(doc)));
-  const selectedActivity =
-    selectedDoc && (isActiveDocument(selectedDoc) || selectedDoc.status === 'failed')
-      ? describeProcessing(selectedDoc, activityNow)
-      : null;
 
   const sidebar = (
     <aside className="glass flex h-full w-[17.5rem] max-lg:w-full shrink-0 flex-col overflow-hidden">
@@ -727,7 +685,6 @@ export function WorkspacePage() {
             : canManage
               ? 'Upload a PDF, Word, Excel, or image file to start asking questions'
               : 'Waiting for the organization admin to add a ready file'}
-          {selectedDoc ? ` · Viewing ${selectedDoc.name}` : ''}
         </p>
       </div>
 
@@ -927,32 +884,6 @@ export function WorkspacePage() {
           </button>
           <BrandMark size="sm" showWordmark className="min-w-0 !gap-2" />
         </div>
-        {selectedDoc ? (
-          <div className="px-2 pb-2">
-            <div className="segmented segmented-fill" role="tablist" aria-label="Workspace panel">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={mobilePanel === 'chat'}
-                className={clsx('segmented-btn', mobilePanel === 'chat' && 'segmented-btn-active')}
-                onClick={() => setMobilePanel('chat')}
-              >
-                <MessageSquare className="icon-sm" aria-hidden />
-                Chat
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={mobilePanel === 'document'}
-                className={clsx('segmented-btn', mobilePanel === 'document' && 'segmented-btn-active')}
-                onClick={() => setMobilePanel('document')}
-              >
-                <FileText className="icon-sm" aria-hidden />
-                Document
-              </button>
-            </div>
-          </div>
-        ) : null}
       </header>
 
       <div className="relative z-10 flex min-h-0 flex-1 gap-2 p-2 lg:gap-4 lg:p-4">
@@ -970,49 +901,8 @@ export function WorkspacePage() {
           </div>
         )}
 
-        <div className="flex min-h-0 min-w-0 flex-1 gap-3 lg:gap-4">
-          <div
-            className={clsx(
-              'flex min-h-0 min-w-0 flex-1',
-              selectedDoc && mobilePanel !== 'chat' && 'hidden lg:flex',
-            )}
-          >
-            {chatPanel}
-          </div>
-          {selectedDoc && (
-            <div
-              className={clsx(
-                'min-h-0 min-w-0 flex-1',
-                mobilePanel === 'document' ? 'flex lg:flex' : 'hidden lg:flex',
-              )}
-            >
-              <section className="surface flex h-full min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
-                {selectedActivity ? (
-                  <div className="border-b border-[var(--color-line)] px-4 py-3">
-                    <p className="mb-2 truncate text-sm font-medium">{selectedDoc.name}</p>
-                    <FileActivity {...selectedActivity} />
-                  </div>
-                ) : null}
-                <div className="flex h-full min-h-0 w-full flex-1 flex-col">
-                  {isOfficeMime(selectedDoc.mimeType) ? (
-                    <OfficePreview
-                      documentId={selectedDoc.id}
-                      mimeType={selectedDoc.mimeType}
-                      highlightPage={highlightPage}
-                      onClose={closeDocumentView}
-                    />
-                  ) : (
-                    <PdfViewer
-                      documentId={selectedDoc.id}
-                      mimeType={selectedDoc.mimeType}
-                      highlightPage={highlightPage}
-                      onClose={closeDocumentView}
-                    />
-                  )}
-                </div>
-              </section>
-            </div>
-          )}
+        <div className="flex min-h-0 min-w-0 flex-1">
+          {chatPanel}
         </div>
       </div>
 

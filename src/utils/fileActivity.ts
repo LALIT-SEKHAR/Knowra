@@ -77,6 +77,32 @@ function stageTitle(doc: Pick<KnowraDocument, 'status' | 'stage' | 'progress'>):
   return 'Finishing up';
 }
 
+/** Short status copy. Raw provider errors include redacted keys that blow out the row. */
+export function friendlyFileError(message: string | null | undefined): string | null {
+  if (!message?.trim()) return null;
+  const text = message.replace(/\s+/g, ' ').trim();
+  const lower = text.toLowerCase();
+  if (/api key/i.test(text) && /401|incorrect|invalid|rejected|unauthorized/i.test(text)) {
+    return 'The OpenAI API key was rejected. Open Settings → AI and save a valid key.';
+  }
+  if (lower.includes('rate limit') || /\b429\b/.test(lower)) {
+    return 'OpenAI rate limit was reached. Retry this file in a minute.';
+  }
+  if (lower.includes('insufficient_quota') || lower.includes('quota')) {
+    return 'The OpenAI account is out of quota. Check billing, then retry this file.';
+  }
+  const stripped = text
+    .replace(/sk-[a-zA-Z0-9*_-]+/g, '')
+    .replace(/\*+/g, '')
+    .replace(/https?:\/\/\S+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const sentence = stripped.split(/(?<=[.!?])\s/)[0] ?? stripped;
+  if (!sentence) return 'Processing failed.';
+  if (sentence.length <= 140) return sentence;
+  return `${sentence.slice(0, 137).trim()}…`;
+}
+
 export function describeUpload(
   upload: {
     localId: string;
@@ -91,7 +117,7 @@ export function describeUpload(
   if (upload.status === 'failed') {
     return {
       title: 'Upload failed',
-      detail: upload.errorMessage ?? null,
+      detail: friendlyFileError(upload.errorMessage),
       progress: null,
       failed: true,
     };
@@ -127,7 +153,7 @@ export function describeProcessing(doc: KnowraDocument, now: number): FileActivi
   if (doc.status === 'failed') {
     return {
       title: 'Processing failed',
-      detail: doc.errorMessage ?? null,
+      detail: friendlyFileError(doc.errorMessage),
       progress: null,
       failed: true,
     };

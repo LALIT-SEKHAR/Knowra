@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent, type UIEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type UIEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import clsx from 'clsx';
 import {
@@ -20,7 +21,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
-import type { ChatMessage, Conversation, KnowraDocument } from '../types';
+import type { ChatMessage, Conversation, KnowraDocument, TutorQuiz } from '../types';
 import { isOfficeMime } from '../utils/fileTypes';
 import { formatMessageTime, groupByRecency } from '../utils/format';
 import { describeProcessing, isActiveDocument, useActivityClock } from '../utils/fileActivity';
@@ -34,11 +35,54 @@ import { FileActivity } from './FileActivity';
 import { OfficePreview } from './OfficePreview';
 import { PdfViewer } from './PdfViewer';
 import { ChatMessagesSkeleton, WorkspaceNavSkeleton } from './Skeleton';
+import { QuizCard } from './QuizCard';
 import { LiveReply } from './ThinkingIndicator';
 import { UserAvatar, displayName } from './UserAvatar';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { copyRenderedMessage } from '../utils/copyResponse';
 import { readViewCache, writeViewCache } from '../utils/viewCache';
+
+type AskFile = { id: string; name: string };
+
+function activeMention(value: string, cursor: number): { query: string; at: number } | null {
+  const upto = value.slice(0, cursor);
+  const at = upto.lastIndexOf('@');
+  if (at < 0) return null;
+  if (at > 0 && !/\s/.test(upto[at - 1] ?? '')) return null;
+  return { query: upto.slice(at + 1), at };
+}
+
+function composeAskedQuestion(question: string, file: AskFile | null, fileAt: number | null) {
+  if (!file || fileAt == null) return { content: question.trim(), mention: undefined };
+  const at = Math.max(0, Math.min(fileAt, question.length));
+  const raw = `${question.slice(0, at)}${file.name}${question.slice(at)}`;
+  const leading = raw.length - raw.trimStart().length;
+  const content = raw.trim();
+  return {
+    content,
+    mention: { name: file.name, at: Math.max(0, at - leading) },
+  };
+}
+
+function UserText({
+  content,
+  mention,
+}: {
+  content: string;
+  mention?: { name: string; at: number };
+}) {
+  if (!mention) return content;
+  const matchesAt = content.slice(mention.at, mention.at + mention.name.length) === mention.name;
+  const start = matchesAt ? mention.at : content.indexOf(mention.name);
+  if (start < 0) return content;
+  return (
+    <>
+      {content.slice(0, start)}
+      <span className="ask-file">{mention.name}</span>
+      {content.slice(start + mention.name.length)}
+    </>
+  );
+}
 
 const CHAT_PAGE_SIZE = 20;
 
@@ -159,6 +203,13 @@ export function WorkspacePage() {
   const [notice, setNotice] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [question, setQuestion] = useState('');
+  const [askCursor, setAskCursor] = useState(0);
+  const [attachedFile, setAttachedFile] = useState<AskFile | null>(null);
+  const [fileAt, setFileAt] = useState<number | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [closedMention, setClosedMention] = useState<string | null>(null);
+  const [askFocused, setAskFocused] = useState(false);
+  const [memberFiles, setMemberFiles] = useState<AskFile[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [highlightPage, setHighlightPage] = useState<number | null>(null);
@@ -184,6 +235,7 @@ export function WorkspacePage() {
   const chatQueryRef = useRef(chatQuery);
   const searchRequestRef = useRef(0);
   const questionInputRef = useRef<HTMLInputElement>(null);
+  const beforeInputRef = useRef<HTMLInputElement>(null);
   const refocusQuestionRef = useRef(false);
   chatQueryRef.current = chatQuery;
 
@@ -303,12 +355,6 @@ export function WorkspacePage() {
         if (loadId !== chatLoadIdRef.current) return;
         setMessages(res.messages);
         writeViewCache(`messages:${selectedChatId}`, res.messages);
-        if (res.conversation.documentId && res.conversation.documentId !== selectedDocId) {
-          setSearchParams({
-            doc: res.conversation.documentId,
-            conversation: selectedChatId,
-          });
-        }
       })
       .catch((err) => {
         if (loadId !== chatLoadIdRef.current) return;
@@ -317,7 +363,7 @@ export function WorkspacePage() {
       .finally(() => {
         if (loadId === chatLoadIdRef.current) setMessagesLoading(false);
       });
-  }, [selectedChatId, selectedDocId, setSearchParams]);
+  }, [selectedChatId]);
 
   useLayoutEffect(() => {
     if (!followChatRef.current || messagesLoading) return;
@@ -363,8 +409,7 @@ export function WorkspacePage() {
 
   function selectConversation(c: Conversation) {
     const params: Record<string, string> = { conversation: c.id };
-    if (c.documentId) params.doc = c.documentId;
-    else if (selectedDocId) params.doc = selectedDocId;
+    if (selectedDocId) params.doc = selectedDocId;
     setSearchParams(params);
     setDrawerOpen(false);
     setMobilePanel('chat');
@@ -393,11 +438,143 @@ export function WorkspacePage() {
     [documents],
   );
   const readyCount = canManage ? readyDocs.length : (user?.readyDocumentCount ?? 0);
+  const askFiles = useMemo<AskFile[]>(
+    () => (canManage ? readyDocs.map((doc) => ({ id: doc.id, name: doc.name })) : memberFiles),
+    [canManage, readyDocs, memberFiles],
+  );
+  const mention = activeMention(question, askCursor);
+  const mentionKey = mention ? `${mention.at}:${mention.query}` : null;
+  const mentionMatches = useMemo(() => {
+    if (!mention) return [];
+    const query = mention.query.trim().toLowerCase();
+    return askFiles
+      .filter((file) => !query || file.name.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [askFiles, mention]);
+  const mentionMenuOpen = Boolean(mention) && askFocused && closedMention !== mentionKey && !busy;
+  const mentionActive = mentionMatches.length
+    ? Math.min(mentionIndex, mentionMatches.length - 1)
+    : 0;
+
+  function chooseAskFile(file: AskFile) {
+    const active = activeMention(question, askCursor);
+    if (active) {
+      const before = question.slice(0, active.at);
+      const after = question.slice(askCursor);
+      setQuestion(before + after);
+      setFileAt(before.length);
+      setAskCursor(before.length);
+      requestAnimationFrame(() => {
+        const el = questionInputRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(0, 0);
+      });
+    } else {
+      setFileAt(question.length);
+    }
+    setAttachedFile(file);
+    setClosedMention(null);
+  }
+
+  function onQuestionKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    const input = event.currentTarget;
+    const isAfter = input === questionInputRef.current;
+    const isBefore = input === beforeInputRef.current;
+    if (
+      !mentionMenuOpen &&
+      isAfter &&
+      event.key === 'ArrowLeft' &&
+      !event.shiftKey &&
+      input.selectionStart === 0 &&
+      input.selectionEnd === 0 &&
+      fileLocked
+    ) {
+      event.preventDefault();
+      const before = beforeInputRef.current;
+      if (!before) return;
+      const end = before.value.length;
+      before.focus();
+      before.setSelectionRange(end, end);
+      setAskCursor(end);
+      return;
+    }
+    if (
+      !mentionMenuOpen &&
+      isBefore &&
+      event.key === 'ArrowRight' &&
+      !event.shiftKey &&
+      input.selectionStart === input.value.length &&
+      fileLocked
+    ) {
+      event.preventDefault();
+      const after = questionInputRef.current;
+      after?.focus();
+      after?.setSelectionRange(0, 0);
+      setAskCursor(fileAt ?? 0);
+      return;
+    }
+    if (event.key === 'Backspace' && isAfter && attachedFile && fileAt != null && input.selectionStart === 0 && input.selectionEnd === 0 && !mention) {
+      event.preventDefault();
+      const pos = fileAt;
+      setAttachedFile(null);
+      setFileAt(null);
+      requestAnimationFrame(() => {
+        const el = questionInputRef.current;
+        el?.focus();
+        el?.setSelectionRange(pos, pos);
+      });
+      return;
+    }
+    if (!mentionMenuOpen) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setMentionIndex((index) => (mentionMatches.length ? (index + 1) % mentionMatches.length : 0));
+      return;
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setMentionIndex((index) =>
+        mentionMatches.length ? (index - 1 + mentionMatches.length) % mentionMatches.length : 0,
+      );
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setClosedMention(mentionKey);
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === 'Tab') && mentionMatches[mentionActive]) {
+      event.preventDefault();
+      chooseAskFile(mentionMatches[mentionActive]);
+    }
+  }
 
   useEffect(() => {
     if (canManage) return;
     void refreshUser();
   }, [canManage, user?.activeOrg?.id, refreshUser]);
+
+  useEffect(() => {
+    if (canManage) return;
+    let cancel = false;
+    void api
+      .listMentionableFiles()
+      .then((res) => {
+        if (!cancel) setMemberFiles(res.files);
+      })
+      .catch(() => {
+        if (!cancel) setMemberFiles([]);
+      });
+    return () => {
+      cancel = true;
+    };
+  }, [canManage, user?.activeOrg?.id]);
+
+  useEffect(() => {
+    setAttachedFile(null);
+    setFileAt(null);
+  }, [user?.activeOrg?.id]);
 
   function onChatScroll(event: UIEvent<HTMLDivElement>) {
     const el = event.currentTarget;
@@ -412,6 +589,10 @@ export function WorkspacePage() {
 
   async function onAsk(e: FormEvent) {
     e.preventDefault();
+    if (mentionMenuOpen && mentionMatches[mentionActive]) {
+      chooseAskFile(mentionMatches[mentionActive]);
+      return;
+    }
     if (!question.trim()) return;
     if (!user?.canChat) {
       setError(
@@ -432,20 +613,26 @@ export function WorkspacePage() {
     setTypingMessageId(null);
     setError('');
     followChatRef.current = true;
-    const q = question.trim();
+    const composed = composeAskedQuestion(question, attachedFile, fileAt);
+    const q = composed.content;
+    const fileId = attachedFile?.id;
     setQuestion('');
+    setAskCursor(0);
+    setAttachedFile(null);
+    setFileAt(null);
+    setClosedMention(null);
     setMessages((prev) => [
       ...prev,
       {
         id: `temp-${Date.now()}`,
         role: 'user',
         content: q,
+        mention: composed.mention,
         createdAt: new Date().toISOString(),
       },
     ]);
     try {
-      // Search across all ready documents in the library
-      const res = await api.chat(q, selectedChatId || undefined);
+      const res = await api.chat(q, selectedChatId || undefined, fileId, composed.mention);
       const conv = await api.getConversation(res.conversationId);
       const reply = [...conv.messages].reverse().find((message) => message.role === 'assistant');
       if (res.conversationId !== selectedChatId) {
@@ -464,6 +651,14 @@ export function WorkspacePage() {
       refocusQuestionRef.current = true;
       setBusy(false);
     }
+  }
+
+  function onQuizScored(messageId: string, quiz: TutorQuiz) {
+    setMessages((prev) => {
+      const next = prev.map((message) => (message.id === messageId ? { ...message, quiz } : message));
+      if (selectedChatId) writeViewCache(`messages:${selectedChatId}`, next);
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -712,6 +907,10 @@ export function WorkspacePage() {
       ? (messages.find((m) => m.id === typingMessageId && m.role === 'assistant') ?? null)
       : null;
 
+  const fileLocked = attachedFile != null && fileAt != null;
+  const askPrefix = fileLocked ? question.slice(0, fileAt) : '';
+  const askSuffix = fileLocked ? question.slice(fileAt) : question;
+
   const chatPanel = (
     <section className="surface flex min-w-0 flex-1 flex-col overflow-hidden">
       <div className="chrome-bar hidden border-b border-[var(--color-line)] px-4 py-3 lg:block">
@@ -720,14 +919,16 @@ export function WorkspacePage() {
           <span className="truncate">Library chat</span>
         </h2>
         <p className="mt-0.5 text-xs text-[var(--color-ink-muted)]">
-          {readyCount > 0
-            ? canManage
-              ? `Answers from all ${readyCount} ready document${readyCount === 1 ? '' : 's'}`
-              : `Answers from this organization's ${readyCount} ready document${readyCount === 1 ? '' : 's'}`
-            : canManage
-              ? 'Upload a PDF, Word, Excel, or image file to start asking questions'
-              : 'Waiting for the organization admin to add a ready file'}
-          {selectedDoc ? ` · Viewing ${selectedDoc.name}` : ''}
+          {attachedFile
+            ? `Answers from ${attachedFile.name}`
+            : readyCount > 0
+              ? canManage
+                ? `Answers from all ${readyCount} ready document${readyCount === 1 ? '' : 's'}`
+                : `Answers from this organization's ${readyCount} ready document${readyCount === 1 ? '' : 's'}`
+              : canManage
+                ? 'Upload a PDF, Word, Excel, or image file to start asking questions'
+                : 'Waiting for the organization admin to add a ready file'}
+          {!attachedFile && selectedDoc ? ` · Viewing ${selectedDoc.name}` : ''}
         </p>
       </div>
 
@@ -802,7 +1003,7 @@ export function WorkspacePage() {
             <div className="space-y-4">
             {messages.length === 0 && (
               <p className="text-sm text-[var(--color-ink-muted)]">
-                Ask anything about your uploaded files. Knowra searches across your whole library.
+                Ask about your files, or ask to simplify a topic, turn it into a game, or make a quiz.
               </p>
             )}
             {messages.filter((m) => m.id !== liveMessage?.id).map((m) => {
@@ -815,6 +1016,7 @@ export function WorkspacePage() {
                       m.role === 'user'
                         ? 'bubble-user ml-auto whitespace-pre-wrap'
                         : 'bubble-ai min-w-0',
+                      m.quiz ? 'sm:min-w-[24rem]' : '',
                     )}
                   >
                     <div className="bubble-meta">
@@ -831,16 +1033,27 @@ export function WorkspacePage() {
                       ) : null}
                     </div>
                     {m.role === 'assistant' ? (
-                      <ChatMarkdown
-                        content={m.content}
-                        animate={m.id === typingMessageId}
-                        onTick={stickChatToBottom}
-                        onComplete={() =>
-                          setTypingMessageId((current) => (current === m.id ? null : current))
-                        }
-                      />
+                      <>
+                        {m.steps && m.steps.length > 0 ? (
+                          <p className="mb-2 text-xs text-[var(--color-ink-muted)]">{m.steps.join(' · ')}</p>
+                        ) : null}
+                        <ChatMarkdown
+                          content={m.content}
+                          animate={m.id === typingMessageId}
+                          onTick={stickChatToBottom}
+                          onComplete={() =>
+                            setTypingMessageId((current) => (current === m.id ? null : current))
+                          }
+                        />
+                        {m.quiz && m.id !== typingMessageId ? (
+                          <QuizCard
+                            quiz={m.quiz}
+                            onScored={(quiz) => onQuizScored(m.id, quiz)}
+                          />
+                        ) : null}
+                      </>
                     ) : (
-                      m.content
+                      <UserText content={m.content} mention={m.mention} />
                     )}
                   </div>
                   {m.role === 'assistant' && m.id !== typingMessageId && m.content.trim() ? (
@@ -876,20 +1089,126 @@ export function WorkspacePage() {
       >
         {error && <p className="mb-2 text-sm text-[var(--color-danger)]">{error}</p>}
         <div className="flex items-center gap-2">
-          <input
-            ref={questionInputRef}
-            value={question}
-            onChange={(e) => setQuestion(e.target.value)}
-            disabled={!user?.canChat || readyCount === 0 || busy}
-            placeholder={
-              readyCount > 0
-                ? 'Ask anything across your documents…'
-                : canManage
-                  ? 'Upload a ready file to start chatting…'
-                  : 'No ready files in this organization yet…'
-            }
-            className="field min-w-0 flex-1"
-          />
+          <div className="relative min-w-0 flex-1">
+            {mentionMenuOpen
+              ? createPortal(
+                  <ul
+                    className="file-action-menu max-h-64 overflow-auto"
+                    style={{
+                      position: 'fixed',
+                      left: questionInputRef.current?.getBoundingClientRect().left ?? 0,
+                      width: questionInputRef.current?.getBoundingClientRect().width ?? 280,
+                      bottom:
+                        window.innerHeight -
+                        (questionInputRef.current?.getBoundingClientRect().top ?? 0) +
+                        8,
+                    }}
+                    role="listbox"
+                    aria-label="Files"
+                  >
+                {mentionMatches.length === 0 ? (
+                  <li className="px-3 py-2 text-sm text-[var(--color-ink-muted)]">No matching files</li>
+                ) : (
+                  mentionMatches.map((file, index) => (
+                    <li key={file.id}>
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={index === mentionActive}
+                        className={clsx('file-action-item', index === mentionActive && 'bg-white/10')}
+                        onMouseEnter={() => setMentionIndex(index)}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => chooseAskFile(file)}
+                      >
+                        <FileText className="icon-sm shrink-0 text-[var(--color-ink-muted)]" aria-hidden />
+                        <span className="truncate">{file.name}</span>
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>,
+                  document.body,
+                )
+              : null}
+            <div
+              className={clsx('field ask-field w-full', (!user?.canChat || readyCount === 0 || busy) && 'opacity-55')}
+              onMouseDown={(event) => {
+                const target = event.target;
+                if (target instanceof HTMLElement && target.closest('input')) return;
+                event.preventDefault();
+                questionInputRef.current?.focus();
+              }}
+            >
+              {fileLocked ? (
+                <input
+                  ref={beforeInputRef}
+                  value={askPrefix}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    const sel = event.target.selectionStart ?? value.length;
+                    setQuestion(value + askSuffix);
+                    setFileAt(value.length);
+                    setAskCursor(sel);
+                  }}
+                  onSelect={(event) => setAskCursor(event.currentTarget.selectionStart ?? 0)}
+                  onKeyDown={onQuestionKeyDown}
+                  onFocus={() => setAskFocused(true)}
+                  onBlur={() => setAskFocused(false)}
+                  onKeyUp={(event) => {
+                    if (event.key === 'Enter') return;
+                    setAskCursor(event.currentTarget.selectionStart ?? 0);
+                  }}
+                  onClick={(event) => setAskCursor(event.currentTarget.selectionStart ?? 0)}
+                  disabled={!user?.canChat || readyCount === 0 || busy}
+                  aria-label="Text before the file"
+                  className="ask-field-before"
+                />
+              ) : null}
+              {attachedFile ? <span className="ask-file">{attachedFile.name}</span> : null}
+              <input
+                ref={questionInputRef}
+                value={askSuffix}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  const sel = event.target.selectionStart ?? value.length;
+                  if (fileLocked) {
+                    setQuestion(question.slice(0, fileAt) + value);
+                    setAskCursor(fileAt + sel);
+                  } else {
+                    setQuestion(value);
+                    setAskCursor(sel);
+                  }
+                }}
+                onSelect={(event) => {
+                  const sel = event.currentTarget.selectionStart ?? 0;
+                  setAskCursor(fileLocked ? fileAt + sel : sel);
+                }}
+                onKeyDown={onQuestionKeyDown}
+                onFocus={() => setAskFocused(true)}
+                onBlur={() => setAskFocused(false)}
+                onKeyUp={(event) => {
+                  if (event.key === 'Enter') return;
+                  const sel = event.currentTarget.selectionStart ?? 0;
+                  setAskCursor(fileLocked ? fileAt + sel : sel);
+                }}
+                onClick={(event) => {
+                  const sel = event.currentTarget.selectionStart ?? 0;
+                  setAskCursor(fileLocked ? fileAt + sel : sel);
+                }}
+                disabled={!user?.canChat || readyCount === 0 || busy}
+                placeholder={
+                  attachedFile
+                    ? ''
+                    : readyCount > 0
+                      ? 'Ask anything, or type @ to use one file…'
+                      : canManage
+                        ? 'Upload a ready file to start chatting…'
+                        : 'No ready files in this organization yet…'
+                }
+                className="ask-field-input"
+              />
+            </div>
+          </div>
           <button
             type="submit"
             disabled={!user?.canChat || readyCount === 0 || busy || !question.trim()}

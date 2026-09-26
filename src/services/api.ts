@@ -322,6 +322,9 @@ export const api = {
       { method: 'POST' },
     ),
 
+  listMentionableFiles: () =>
+    request<{ files: { id: string; name: string }[] }>('/documents/mentionable'),
+
   listDocuments: (q?: string, folder?: string) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);
@@ -541,14 +544,19 @@ export const api = {
       method: 'POST',
     }),
 
-  chat: (question: string, conversationId?: string, documentId?: string) =>
+  chat: (
+    question: string,
+    conversationId?: string,
+    documentId?: string,
+    mention?: { name: string; at: number },
+  ) =>
     request<{
       answer: string;
       sources: import('../types').SourceRef[];
       conversationId: string;
     }>('/conversations/chat', {
       method: 'POST',
-      body: JSON.stringify({ question, conversationId, documentId }),
+      body: JSON.stringify({ question, conversationId, documentId, mention }),
     }),
 
   /** @deprecated Prefer api.chat() for library-wide or optional scoped chat */
@@ -576,6 +584,12 @@ export const api = {
 
   deleteConversation: (id: string) =>
     request<{ ok: boolean }>(`/conversations/${id}`, { method: 'DELETE' }),
+
+  submitQuiz: (id: string, answers: number[]) =>
+    request<{ quiz: import('../types').TutorQuiz }>(`/quizzes/${id}/attempts`, {
+      method: 'POST',
+      body: JSON.stringify({ answers }),
+    }),
 
   getUsage: () => request<import('../types').UsageSummary>('/usage'),
 };

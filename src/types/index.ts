@@ -133,11 +133,32 @@ export type Conversation = {
   snippet?: string;
 };
 
+export type TutorQuiz = {
+  id: string;
+  title: string;
+  questions: { prompt: string; choices: string[]; topic: string }[];
+  attempt: null | {
+    answers: number[];
+    correctCount: number;
+    total: number;
+    results: {
+      correct: boolean;
+      correctIndex: number;
+      topic: string;
+      explanation: string;
+    }[];
+    focus: { topic: string; misses: number }[];
+  };
+};
+
 export type ChatMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   sources?: SourceRef[];
+  steps?: string[];
+  quiz?: TutorQuiz;
+  mention?: { name: string; at: number };
   createdAt: string;
 };
 

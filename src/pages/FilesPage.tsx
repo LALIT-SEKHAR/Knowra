@@ -11,6 +11,7 @@ import {
   ChevronRight,
   ExternalLink,
   FileText,
+  RotateCcw,
   Folder,
   FolderPlus,
   FolderUp,
@@ -37,7 +38,7 @@ import { FilePreviewModal } from '../components/FilePreviewModal';
 import { MoveItemDialog, NameDialog, type MoveSubject } from '../components/FileFolderDialogs';
 import { FileActivity } from '../components/FileActivity';
 import { FilesGridSkeleton, FilesListSkeleton, FilesTableSkeleton } from '../components/Skeleton';
-import { describeProcessing, describeUpload, isActiveDocument, useActivityClock } from '../utils/fileActivity';
+import { describeProcessing, describeUpload, friendlyFileError, isActiveDocument, useActivityClock } from '../utils/fileActivity';
 import { readViewCache, writeViewCache } from '../utils/viewCache';
 
 type FilesView = 'list' | 'grid';
@@ -161,7 +162,6 @@ export function FilesPage() {
   const moreRef = useRef<HTMLParagraphElement>(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(() => initialFiles === null);
-  const [refreshing, setRefreshing] = useState(false);
   const [preparingFolders, setPreparingFolders] = useState(false);
   const [error, setError] = useState('');
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
@@ -192,7 +192,6 @@ export function FilesPage() {
   const load = useCallback(async (q?: string) => {
     const request = ++loadSeq.current;
     setError('');
-    setRefreshing(true);
     try {
       const res = await api.listDocuments(q, folderId ?? 'root');
       if (request !== loadSeq.current) return;
@@ -216,10 +215,7 @@ export function FilesPage() {
         setBreadcrumb([]);
       }
     } finally {
-      if (request === loadSeq.current) {
-        setLoading(false);
-        setRefreshing(false);
-      }
+      if (request === loadSeq.current) setLoading(false);
     }
   }, [folderId]);
 
@@ -491,6 +487,17 @@ export function FilesPage() {
     setDeleteTarget({ kind: 'folder', folder });
   }
 
+  async function retryFile(doc: KnowraDocument) {
+    setOpenMenuId(null);
+    setError('');
+    try {
+      const res = await api.retryDocument(doc.id);
+      setDocuments((prev) => prev.map((item) => (item.id === doc.id ? res.document : item)));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not retry this file');
+    }
+  }
+
   function requestDeleteFile(doc: KnowraDocument) {
     setOpenMenuId(null);
     setDeleteTarget({ kind: 'file', doc });
@@ -634,7 +641,7 @@ export function FilesPage() {
   function statusLabel(doc: KnowraDocument) {
     if (doc.status === 'ready') return 'Ready';
     if (doc.status === 'failed') {
-      return doc.errorMessage ? `Failed: ${doc.errorMessage}` : 'Failed';
+      return friendlyFileError(doc.errorMessage) ?? 'Failed';
     }
     return doc.status;
   }
@@ -808,6 +815,17 @@ export function FilesPage() {
               <ExternalLink className="icon-sm" aria-hidden />
               Open
             </button>
+            {doc.status === 'failed' ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="file-action-item"
+                onClick={() => void retryFile(doc)}
+              >
+                <RotateCcw className="icon-sm" aria-hidden />
+                Retry
+              </button>
+            ) : null}
             <button
               type="button"
               role="menuitem"
@@ -1109,9 +1127,6 @@ export function FilesPage() {
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--color-line)] px-3 py-2.5 sm:px-4">
             <div className="flex items-center gap-1.5">
-              {refreshing && !showFilesSkeleton ? (
-                <span className="text-xs text-[var(--color-ink-muted)]">Updating…</span>
-              ) : null}
               <label className="sr-only" htmlFor="files-sort">
                 Sort by
               </label>

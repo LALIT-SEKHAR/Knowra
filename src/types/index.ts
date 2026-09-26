@@ -14,6 +14,21 @@ export type ChatProviderOption = {
 
 export type ChatProviderId = 'openai' | 'anthropic' | 'google' | 'xai' | 'custom';
 
+export type DocumentProviderId = 'openai' | 'google' | 'custom';
+
+export type DocumentRebuildPreview = {
+  fileCount: number;
+  imageFileCount: number;
+  imagePageCount: number;
+  estimatedTokens: number;
+  estimatedUsd: number | null;
+  priceKnown: boolean;
+  providerLabel: string;
+  embeddingModel: string;
+  chatModel: string;
+  chatModelLabel: string;
+};
+
 export type User = {
   id: string;
   email: string;
@@ -21,6 +36,10 @@ export type User = {
   avatarUrl?: string | null;
   hasOpenAIKey: boolean;
   openaiKeyLast4?: string | null;
+  documentProvider?: DocumentProviderId | string;
+  documentModel?: string | null;
+  /** The workspace document provider has a key or custom base URL. */
+  hasDocumentKey?: boolean;
   chatProvider?: ChatProviderId | string;
   chatModel?: string;
   hasAnthropicKey?: boolean;
@@ -55,6 +74,9 @@ export type User = {
 export type AiSettings = {
   hasOpenAIKey: boolean;
   openaiKeyLast4: string | null;
+  documentProvider: DocumentProviderId | string;
+  documentModel: string | null;
+  hasDocumentKey: boolean;
   chatProvider: ChatProviderId | string;
   chatModel: string;
   chatProviders: ChatProviderOption[];

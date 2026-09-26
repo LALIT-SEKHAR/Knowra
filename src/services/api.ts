@@ -247,6 +247,22 @@ export const api = {
       method: 'DELETE',
     }),
 
+  previewDocumentProvider: (provider: string, documentModel?: string) =>
+    request<import('../types').DocumentRebuildPreview>('/settings/document-provider/preview', {
+      method: 'POST',
+      body: JSON.stringify({ provider, documentModel }),
+    }),
+
+  putDocumentProvider: (params: {
+    provider: string;
+    confirm?: boolean;
+    documentModel?: string;
+  }) =>
+    request<import('../types').AiSettings>('/settings/document-provider', {
+      method: 'PUT',
+      body: JSON.stringify(params),
+    }),
+
   putChatPrefs: (prefs: {
     chatProvider: string;
     chatModel: string;

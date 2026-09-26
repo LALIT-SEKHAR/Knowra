@@ -31,7 +31,13 @@ import { ConfirmDialog } from '../components/ConfirmDialog';
 import { MemberPicker } from '../components/MemberPicker';
 import { DeleteAccountDialog } from '../components/DeleteAccountDialog';
 import { DeleteAllFilesDialog } from '../components/DeleteAllFilesDialog';
-import type { AiSettings, ChatProviderId, ChatProviderOption } from '../types';
+import type {
+  AiSettings,
+  ChatProviderId,
+  ChatProviderOption,
+  DocumentProviderId,
+  DocumentRebuildPreview,
+} from '../types';
 import clsx from 'clsx';
 
 type ConfirmKind = 'remove-key' | 'clear-chats' | 'remove-provider-key' | null;
@@ -68,7 +74,7 @@ const FALLBACK_PROVIDERS: ChatProviderOption[] = [
     description: 'Google Gemini — add your Google AI Studio key.',
     needsSeparateKey: true,
     models: [
-      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', description: 'Fast and affordable.' },
+      { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', description: 'Fast and affordable.' },
       { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', description: 'Stronger reasoning and longer context.' },
     ],
   },
@@ -91,6 +97,23 @@ const FALLBACK_PROVIDERS: ChatProviderOption[] = [
   },
 ];
 
+const DOCUMENT_PROVIDER_OPTIONS: { id: DocumentProviderId; label: string }[] = [
+  { id: 'openai', label: 'OpenAI' },
+  { id: 'google', label: 'Gemini' },
+  { id: 'custom', label: 'Custom' },
+];
+
+function documentProviderLabel(provider: string): string {
+  if (provider === 'google') return 'Gemini';
+  if (provider === 'custom') return 'Custom';
+  return 'OpenAI';
+}
+
+function formatUsd(value: number): string {
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
+
 type ProviderGuide = {
   title: string;
   summary: string;
@@ -101,22 +124,22 @@ type ProviderGuide = {
 const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
   openai: {
     title: 'How to use OpenAI for chat',
-    summary: 'Uses the same OpenAI key from step 1 for document search and chat answers.',
+    summary: 'Chat answers use your OpenAI key. Document search uses the provider you chose in step 1.',
     steps: [
       {
         text: 'Create or open an API key at',
         href: 'https://platform.openai.com/api-keys',
         hrefLabel: 'platform.openai.com/api-keys',
       },
-      { text: 'Paste it in step 1 (Documents) and save.' },
+      { text: 'Paste it here when step 1 or chat uses OpenAI, then save.' },
       { text: 'Pick an OpenAI model above, then click Use for chat.' },
       { text: 'Enable billing on your OpenAI project or requests will fail.' },
     ],
-    note: 'OpenAI is always required for PDF reading and search, even if chat uses another provider.',
+    note: 'OpenAI is required for document search only when step 1 is OpenAI. Claude and Grok cannot embed files.',
   },
   anthropic: {
     title: 'How to get a Claude (Anthropic) key',
-    summary: 'Claude answers your questions. OpenAI is still used only for searching your PDFs.',
+    summary: 'Claude writes chat answers. It cannot read files or create embeddings.',
     steps: [
       {
         text: 'Sign in or create an account at',
@@ -132,11 +155,11 @@ const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
       { text: 'Choose Haiku, Sonnet, or Opus, then save — Knowra applies Claude for chat.' },
       { text: 'Add credits / billing in Anthropic Console if prompted.' },
     ],
-    note: 'Your Claude key is stored separately and kept if you switch to another provider later.',
+    note: 'Claude stays in step 2. Step 1 (OpenAI, Gemini, or Custom) still searches your files. The Claude key is kept if you switch chat later.',
   },
   google: {
     title: 'How to get a Gemini (Google AI) key',
-    summary: 'Gemini answers your questions. OpenAI is still used only for searching your PDFs.',
+    summary: 'Gemini can search documents when it is selected in step 1, and can write chat answers in step 2.',
     steps: [
       {
         text: 'Open Google AI Studio at',
@@ -156,7 +179,7 @@ const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
   },
   xai: {
     title: 'How to get a Grok (xAI) key',
-    summary: 'Grok answers your questions. OpenAI is still used only for searching your PDFs.',
+    summary: 'Grok writes chat answers. It cannot read files or create embeddings.',
     steps: [
       {
         text: 'Sign in at',
@@ -172,7 +195,7 @@ const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
       { text: 'Choose a Grok model, then save to apply it for chat.' },
       { text: 'Ensure your xAI account has available credits.' },
     ],
-    note: 'Your Grok key is stored separately and kept if you switch to another provider later.',
+    note: 'Grok stays in step 2. Step 1 (OpenAI, Gemini, or Custom) still searches your files. The Grok key is kept if you switch chat later.',
   },
   custom: {
     title: 'How to set up a custom endpoint',
@@ -186,10 +209,11 @@ const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
         text: 'Examples: Ollama http://127.0.0.1:11434/v1 · Groq https://api.groq.com/openai/v1 · OpenRouter https://openrouter.ai/api/v1',
       },
       { text: 'Enter the exact model name your provider expects (e.g. llama3.2 or openai/gpt-4o-mini).' },
+      { text: 'For documents, the endpoint must also support OpenAI-style /embeddings and return 1536-length vectors.' },
       { text: 'API key is optional — leave blank for local Ollama; required for Groq/OpenRouter.' },
-      { text: 'Click Use for chat. Knowra still needs your OpenAI key for PDF search.' },
+      { text: 'Use Custom in step 1 to search files, or only in step 2 if step 1 is OpenAI or Gemini.' },
     ],
-    note: 'The endpoint must support OpenAI-style chat completions.',
+    note: 'A chat-only endpoint can stay in step 2. Document search needs /embeddings.',
   },
 };
 
@@ -221,12 +245,17 @@ function providerHasKey(settings: AiSettings | null, provider: string): boolean 
   return false;
 }
 
+function hasDocumentSetup(settings: AiSettings | null): boolean {
+  if (!settings) return false;
+  return settings.hasDocumentKey;
+}
+
 function providerChatReady(settings: AiSettings | null, provider: string): boolean {
-  if (!settings?.hasOpenAIKey) return false;
+  if (!hasDocumentSetup(settings)) return false;
   const resolved = provider || 'openai';
-  if (resolved === 'openai') return true;
+  if (resolved === 'openai') return Boolean(settings?.hasOpenAIKey);
   if (resolved === 'custom') {
-    return Boolean(settings.customBaseUrl?.trim());
+    return Boolean(settings?.customBaseUrl?.trim());
   }
   return providerHasKey(settings, resolved);
 }
@@ -236,8 +265,8 @@ function draftProviderReady(
   provider: string,
   customBaseUrl: string,
 ): boolean {
-  if (!settings?.hasOpenAIKey) return false;
-  if (provider === 'openai') return true;
+  if (!hasDocumentSetup(settings)) return false;
+  if (provider === 'openai') return Boolean(settings?.hasOpenAIKey);
   if (provider === 'custom') return Boolean(customBaseUrl.trim());
   return providerHasKey(settings, provider);
 }
@@ -260,11 +289,19 @@ function chatReadiness(
   draftReady: boolean,
   isDirty: boolean,
 ): { ready: boolean; title: string; detail: string } {
-  if (!settings?.hasOpenAIKey) {
+  if (!settings) {
     return {
       ready: false,
-      title: 'OpenAI key required',
-      detail: 'Add it below to upload PDFs, Word, Excel, and images and make them searchable.',
+      title: 'Document provider required',
+      detail: 'Choose OpenAI, Gemini, or Custom in step 1 and save its key. Claude and Grok are chat-only.',
+    };
+  }
+
+  if (!hasDocumentSetup(settings)) {
+    return {
+      ready: false,
+      title: 'Document provider required',
+      detail: 'Choose OpenAI, Gemini, or Custom in step 1 and save its key. Claude and Grok are chat-only.',
     };
   }
 
@@ -309,10 +346,11 @@ function chatReadiness(
             ? 'Custom'
             : 'OpenAI';
 
+  const docLabel = documentProviderLabel(settings?.documentProvider || 'openai');
   return {
     ready: true,
     title: 'Ready to chat',
-    detail: `Answers use ${activeLabel}. Keys for other providers are kept when you switch.`,
+    detail: `Documents use ${docLabel}. Answers use ${activeLabel}. Keys stay saved when you switch.`,
   };
 }
 
@@ -823,6 +861,16 @@ export function SettingsPage() {
   const { timeFormat, setTimeFormat, theme, resolvedTheme, setTheme } = usePreferences();
   const [section, setSection] = useState<SettingsSection>(sectionFromHash);
   const [apiKey, setApiKey] = useState('');
+  const [docProvider, setDocProvider] = useState<DocumentProviderId>('openai');
+  const [docCustomUrl, setDocCustomUrl] = useState('');
+  const [docCustomModel, setDocCustomModel] = useState('');
+  const [reembed, setReembed] = useState<{
+    provider: DocumentProviderId;
+    documentModel?: string;
+    loading: boolean;
+    failed: boolean;
+    preview: DocumentRebuildPreview | null;
+  } | null>(null);
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [chatProviders, setChatProviders] = useState<ChatProviderOption[]>(FALLBACK_PROVIDERS);
   const [chatProvider, setChatProvider] = useState<ChatProviderId | string>(
@@ -882,6 +930,9 @@ export function SettingsPage() {
     setChatProvider(next.chatProvider || 'openai');
     setChatModel(next.chatModel || 'gpt-4o-mini');
     setCustomBaseUrl(next.customBaseUrl || '');
+    setDocProvider((next.documentProvider as DocumentProviderId) || 'openai');
+    setDocCustomUrl(next.customBaseUrl || '');
+    setDocCustomModel(next.documentModel || '');
     if ((next.chatProvider || 'openai') === 'custom') {
       setCustomModelInput(next.chatModel || 'gpt-4o-mini');
     }
@@ -922,20 +973,135 @@ export function SettingsPage() {
 
   async function onSaveOpenAI(e: FormEvent) {
     e.preventDefault();
+    await saveDocumentSetup();
+  }
+
+  function documentKeyIsSaved(provider: DocumentProviderId, source: AiSettings | null = settings): boolean {
+    if (!source) return false;
+    if (provider === 'openai') return source.hasOpenAIKey;
+    if (provider === 'google') return source.hasGoogleKey;
+    return Boolean(source.customBaseUrl?.trim());
+  }
+
+  async function persistDocumentKey(provider: DocumentProviderId): Promise<AiSettings> {
+    const typed = apiKey.trim();
+    if (provider === 'openai') {
+      if (!typed && !settings?.hasOpenAIKey) {
+        throw new ApiError('Add your OpenAI API key first.', 400);
+      }
+      if (!typed) return settings!;
+      return api.putOpenAIKey(typed);
+    }
+    if (provider === 'google') {
+      if (!typed && !settings?.hasGoogleKey) {
+        throw new ApiError('Add your Gemini API key first.', 400);
+      }
+      if (!typed) return settings!;
+      return api.putProviderKey({ provider: 'google', apiKey: typed, activate: false });
+    }
+    const model = docCustomModel.trim();
+    const baseUrl = (docCustomUrl || settings?.customBaseUrl || '').trim();
+    if (!baseUrl || !model) {
+      throw new ApiError('Enter a base URL and model name for custom documents.', 400);
+    }
+    const urlChanged = baseUrl.replace(/\/$/, '') !== (settings?.customBaseUrl || '').replace(/\/$/, '');
+    if (typed || urlChanged || !settings?.customBaseUrl) {
+      return api.putProviderKey({
+        provider: 'custom',
+        apiKey: typed,
+        baseUrl,
+        activate: false,
+        chatModel: model,
+      });
+    }
+    return settings!;
+  }
+
+  async function finishDocumentProvider(
+    provider: DocumentProviderId,
+    documentModel: string | undefined,
+    confirm: boolean,
+    rebuilt: boolean,
+  ) {
+    const next = await api.putDocumentProvider({
+      provider,
+      confirm,
+      ...(documentModel ? { documentModel } : {}),
+    });
+    setApiKey('');
+    applySettings(next);
+    await refreshUser();
+    setMessage(
+      rebuilt
+        ? `Re-reading your files for ${documentProviderLabel(provider)}.`
+        : `${documentProviderLabel(provider)} is set for documents.`,
+    );
+  }
+
+  async function saveDocumentSetup() {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    const provider = docProvider;
+    const saved = (settings?.documentProvider as DocumentProviderId) || 'openai';
+    const documentModel = provider === 'custom' ? docCustomModel.trim() : undefined;
+    try {
+      const savedKeys = await persistDocumentKey(provider);
+      applySettings(savedKeys);
+      setApiKey('');
+      if (provider === saved) {
+        if (provider === 'custom' && documentModel && documentModel !== (savedKeys.documentModel || '')) {
+          await finishDocumentProvider(provider, documentModel, false, false);
+        } else {
+          setMessage(`${documentProviderLabel(provider)} key saved. Embeddings were not rebuilt.`);
+          await refreshUser();
+        }
+        return;
+      }
+      let preview: DocumentRebuildPreview | null = null;
+      let failed = false;
+      try {
+        preview = await api.previewDocumentProvider(provider, documentModel);
+      } catch {
+        failed = true;
+      }
+      if (!failed && preview && preview.fileCount === 0) {
+        await finishDocumentProvider(provider, documentModel, true, false);
+        return;
+      }
+      setReembed({ provider, documentModel, loading: false, failed, preview });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Failed to save document provider');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmReembed() {
+    if (!reembed) return;
     setBusy(true);
     setError('');
     setMessage('');
     try {
-      const next = await api.putOpenAIKey(apiKey.trim());
-      setApiKey('');
-      applySettings(next);
-      setMessage('OpenAI API key saved securely.');
-      await refreshUser();
+      await finishDocumentProvider(
+        reembed.provider,
+        reembed.documentModel,
+        true,
+        reembed.failed || (reembed.preview?.fileCount ?? 0) > 0,
+      );
+      setReembed(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to save key');
+      setError(err instanceof ApiError ? err.message : 'Could not rebuild embeddings');
     } finally {
       setBusy(false);
     }
+  }
+
+  function cancelReembed() {
+    setDocProvider((settings?.documentProvider as DocumentProviderId) || 'openai');
+    setDocCustomUrl(settings?.customBaseUrl || '');
+    setDocCustomModel(settings?.documentModel || '');
+    setReembed(null);
   }
 
   async function saveChatPrefs(
@@ -1139,12 +1305,17 @@ export function SettingsPage() {
     'remove-key': {
       title: 'Remove OpenAI API key?',
       description:
-        'Knowra won’t be able to read or search your PDFs until you add an OpenAI key again.',
+        (settings?.documentProvider || 'openai') === 'openai'
+          ? 'Knowra won’t be able to read or search your files until you add an OpenAI key again.'
+          : 'This removes the saved OpenAI key. Document search keeps using the provider in step 1.',
       confirmLabel: 'Remove key',
     },
     'remove-provider-key': {
-      title: 'Remove chat provider key?',
-      description: 'You’ll need to add this provider’s key again before using it for chat.',
+      title: 'Remove this API key?',
+      description:
+        pendingProviderDelete && pendingProviderDelete === settings?.documentProvider
+          ? 'Document search uses this provider. Removing the key stops reading and search until you add it again.'
+          : 'You’ll need to add this provider’s key again before using it. Other saved keys stay.',
       confirmLabel: 'Remove key',
     },
     'clear-chats': {
@@ -1365,8 +1536,9 @@ export function SettingsPage() {
                   <div>
                     <h2 className="settings-section-title">AI</h2>
                     <p className="settings-section-desc max-w-lg">
-                      OpenAI powers PDF reading and search. Chat answers can use a different
-                      provider.
+                      Step 1 reads files and builds search with OpenAI, Gemini, or a custom
+                      embeddings endpoint. Step 2 writes the answers and can be a different
+                      provider, including Claude or Grok.
                     </p>
                   </div>
                 </div>
@@ -1399,10 +1571,13 @@ export function SettingsPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <h3 className="settings-ai-step-title">Documents</h3>
-                        {user?.hasOpenAIKey ? (
+                        {hasDocumentSetup(settings) ? (
                           <span className="settings-status settings-status-ok">
                             <Check className="size-3.5" strokeWidth={2.25} aria-hidden />
-                            OpenAI ·•••{user.openaiKeyLast4}
+                            {documentProviderLabel(settings?.documentProvider || 'openai')}
+                            {providerLast4(settings, settings?.documentProvider || 'openai')
+                              ? ` ·•••${providerLast4(settings, settings?.documentProvider || 'openai')}`
+                              : ''}
                           </span>
                         ) : (
                           <span className="settings-status settings-status-warn">
@@ -1411,14 +1586,96 @@ export function SettingsPage() {
                         )}
                       </div>
                       <p className="settings-section-desc !mt-1">
-                        Required. Reads scanned PDFs and creates search embeddings.
+                        Reads scanned pages and creates search embeddings. Claude and Grok are not
+                        listed here because they cannot embed files.
                       </p>
                     </div>
                   </div>
 
+                  <p className="mt-4 text-xs font-medium tracking-wide text-[var(--color-ink-muted)] uppercase">
+                    Provider
+                  </p>
+                  <div className="settings-provider-grid mt-2" role="radiogroup" aria-label="Document provider">
+                    {DOCUMENT_PROVIDER_OPTIONS.map((provider) => {
+                      const selected = docProvider === provider.id;
+                      const live = provider.id === (settings?.documentProvider || 'openai');
+                      const saved = documentKeyIsSaved(provider.id);
+                      return (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          role="radio"
+                          aria-checked={selected}
+                          disabled={busy}
+                          className={clsx(
+                            'settings-provider-chip',
+                            selected && 'settings-provider-chip-active',
+                          )}
+                          onClick={() => {
+                            if (provider.id === docProvider || busy) return;
+                            setDocProvider(provider.id);
+                            if (provider.id === 'custom' && !docCustomModel.trim()) {
+                              setDocCustomModel(settings?.documentModel || settings?.chatModel || '');
+                            }
+                            setApiKey('');
+                            setError('');
+                            setMessage('');
+                          }}
+                        >
+                          <span className="settings-provider-chip-label">{provider.label}</span>
+                          {live ? (
+                            <span className="settings-provider-chip-badge">In use</span>
+                          ) : saved ? (
+                            <span className="settings-provider-chip-badge">Saved</span>
+                          ) : (
+                            <span className="settings-provider-chip-badge settings-provider-chip-badge-muted">
+                              {provider.id === 'custom' ? 'Needs URL' : 'Needs key'}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
                   <form className="mt-4 space-y-3" onSubmit={onSaveOpenAI}>
+                    {docProvider === 'custom' ? (
+                      <>
+                        <label className="block text-sm font-medium">
+                          Base URL
+                          <input
+                            value={docCustomUrl}
+                            onChange={(e) => setDocCustomUrl(e.target.value)}
+                            placeholder="https://api.example.com/v1"
+                            autoComplete="off"
+                            spellCheck={false}
+                            className="field mt-1.5 max-w-lg"
+                            required
+                          />
+                        </label>
+                        <label className="block text-sm font-medium">
+                          Model name
+                          <input
+                            value={docCustomModel}
+                            onChange={(e) => setDocCustomModel(e.target.value)}
+                            placeholder="gpt-4o-mini"
+                            autoComplete="off"
+                            spellCheck={false}
+                            className="field mt-1.5 max-w-lg"
+                            required
+                          />
+                        </label>
+                        <p className="max-w-lg text-xs leading-relaxed text-[var(--color-ink-muted)]">
+                          This model reads scanned pages. Embeddings use text-embedding-3-small on
+                          the same URL and must be 1536 numbers long.
+                        </p>
+                      </>
+                    ) : null}
                     <label className="block text-sm font-medium">
-                      OpenAI secret key
+                      {docProvider === 'google'
+                        ? 'Gemini API key'
+                        : docProvider === 'custom'
+                          ? 'API key (optional)'
+                          : 'OpenAI secret key'}
                       <div className="relative mt-1.5 max-w-lg">
                         <KeyRound
                           className="pointer-events-none absolute top-1/2 left-3 size-[16px] -translate-y-1/2 text-[var(--color-ink-muted)]"
@@ -1429,14 +1686,29 @@ export function SettingsPage() {
                           type="password"
                           value={apiKey}
                           onChange={(e) => setApiKey(e.target.value)}
-                          placeholder="sk-..."
+                          placeholder={
+                            documentKeyIsSaved(docProvider)
+                              ? `Saved${providerLast4(settings, docProvider) ? ` ·•••${providerLast4(settings, docProvider)}` : ''} — paste to replace`
+                              : docProvider === 'custom'
+                                ? 'Leave blank if the endpoint has no key'
+                                : docProvider === 'google'
+                                  ? 'AIza...'
+                                  : 'sk-...'
+                          }
                           autoComplete="off"
                           spellCheck={false}
                           className="field !pl-10"
-                          required
+                          required={docProvider !== 'custom' && !documentKeyIsSaved(docProvider)}
                         />
                       </div>
                     </label>
+                    {docProvider !== (settings?.documentProvider || 'openai') &&
+                    documentKeyIsSaved(docProvider) ? (
+                      <p className="max-w-lg text-xs leading-relaxed text-[var(--color-ink-muted)]">
+                        This key is already saved. You do not need to paste it again. Switching
+                        still rebuilds embeddings.
+                      </p>
+                    ) : null}
                     <div className="flex flex-wrap gap-2">
                       <button type="submit" disabled={busy} className="btn btn-primary">
                         {busy ? (
@@ -1444,13 +1716,24 @@ export function SettingsPage() {
                         ) : (
                           <Save className="icon-sm" aria-hidden />
                         )}
-                        {busy ? 'Saving…' : user?.hasOpenAIKey ? 'Replace key' : 'Save key'}
+                        {busy
+                          ? 'Saving…'
+                          : docProvider === (settings?.documentProvider || 'openai')
+                            ? 'Save'
+                            : 'Use for documents'}
                       </button>
-                      {user?.hasOpenAIKey && (
+                      {documentKeyIsSaved(docProvider) && (
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => setConfirmKind('remove-key')}
+                          onClick={() => {
+                            if (docProvider === 'openai') {
+                              setConfirmKind('remove-key');
+                              return;
+                            }
+                            setPendingProviderDelete(docProvider);
+                            setConfirmKind('remove-provider-key');
+                          }}
                           className="btn btn-danger-soft"
                         >
                           <Trash2 className="icon-sm" aria-hidden />
@@ -1468,25 +1751,54 @@ export function SettingsPage() {
                           strokeWidth={2}
                           aria-hidden
                         />
-                        How to get an OpenAI key
+                        {docProvider === 'google'
+                          ? 'How to get a Gemini key'
+                          : docProvider === 'custom'
+                            ? 'What the custom endpoint must do'
+                            : 'How to get an OpenAI key'}
                       </span>
                     </summary>
-                    <ol className="mt-3 max-w-lg list-decimal space-y-2 pl-5 text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                      <li>
-                        Sign in at{' '}
-                        <a
-                          href="https://platform.openai.com/api-keys"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[var(--color-accent)] underline"
-                        >
-                          platform.openai.com/api-keys
-                        </a>
-                        .
-                      </li>
-                      <li>Create a secret key and paste it above.</li>
-                      <li>Enable billing on your OpenAI project or calls will fail.</li>
-                    </ol>
+                    {docProvider === 'google' ? (
+                      <ol className="mt-3 max-w-lg list-decimal space-y-2 pl-5 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        <li>
+                          Open{' '}
+                          <a
+                            href="https://aistudio.google.com/apikey"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[var(--color-accent)] underline"
+                          >
+                            aistudio.google.com/apikey
+                          </a>
+                          .
+                        </li>
+                        <li>Create an API key and paste it above.</li>
+                        <li>Gemini reads pages and builds its own embeddings.</li>
+                      </ol>
+                    ) : docProvider === 'custom' ? (
+                      <ol className="mt-3 max-w-lg list-decimal space-y-2 pl-5 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        <li>Use an OpenAI-compatible base URL, usually ending in /v1.</li>
+                        <li>The model name is used to read scanned pages.</li>
+                        <li>Embeddings call text-embedding-3-small and must return 1536 numbers.</li>
+                      </ol>
+                    ) : (
+                      <ol className="mt-3 max-w-lg list-decimal space-y-2 pl-5 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        <li>
+                          Sign in at{' '}
+                          <a
+                            href="https://platform.openai.com/api-keys"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[var(--color-accent)] underline"
+                          >
+                            platform.openai.com/api-keys
+                          </a>
+                          .
+                        </li>
+                        <li>Create a secret key and paste it above.</li>
+                        <li>Enable billing on your OpenAI project or calls will fail.</li>
+                      </ol>
+                    )}
                   </details>
                 </div>
 
@@ -1988,6 +2300,55 @@ export function SettingsPage() {
             void runConfirmedAction();
           }}
         />
+      ) : null}
+
+      {reembed ? (
+        <ConfirmDialog
+          open
+          title={`Rebuild search for ${documentProviderLabel(reembed.provider)}?`}
+          description={
+            reembed.preview
+              ? `${reembed.preview.fileCount} file${reembed.preview.fileCount === 1 ? '' : 's'} will be read again. Existing embeddings will be deleted, and search pauses until a file is Ready.`
+              : 'Existing embeddings will be deleted and built again if this workspace already has files. Search pauses until a file is Ready.'
+          }
+          confirmLabel="Rebuild embeddings"
+          cancelLabel="Cancel"
+          busy={busy}
+          confirmDisabled={reembed.loading}
+          onCancel={() => {
+            if (!busy) cancelReembed();
+          }}
+          onConfirm={() => {
+            void confirmReembed();
+          }}
+        >
+          <div className="mt-3 space-y-2 text-sm leading-relaxed text-[var(--color-ink-muted)]">
+            {reembed.failed ? (
+              <p>The cost could not be calculated. You can still continue.</p>
+            ) : reembed.preview ? (
+              <>
+                <p>
+                  {reembed.preview.priceKnown && reembed.preview.estimatedUsd != null
+                    ? `About ${formatUsd(reembed.preview.estimatedUsd)} for ${reembed.preview.estimatedTokens.toLocaleString()} embedding tokens at ${reembed.preview.providerLabel}’s published ${reembed.preview.embeddingModel} rate.`
+                    : `About ${reembed.preview.estimatedTokens.toLocaleString()} embedding tokens. The dollar cost depends on your endpoint.`}{' '}
+                  This is not a charge from Knowra.
+                </p>
+                <p>
+                  Scanned PDFs and images are read again by the vision model. That cost is extra
+                  and is not included above.
+                  {reembed.preview.imageFileCount > 0
+                    ? ` ${reembed.preview.imageFileCount} image file${reembed.preview.imageFileCount === 1 ? '' : 's'} (${reembed.preview.imagePageCount} page${reembed.preview.imagePageCount === 1 ? '' : 's'}) will be read again.`
+                    : ''}
+                </p>
+                <p>
+                  Chat answers will switch to {reembed.preview.providerLabel}
+                  {reembed.preview.chatModelLabel ? ` · ${reembed.preview.chatModelLabel}` : ''}.
+                  You can change the chat model later without rebuilding search.
+                </p>
+              </>
+            ) : null}
+          </div>
+        </ConfirmDialog>
       ) : null}
 
       <DeleteAllFilesDialog

@@ -19,7 +19,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
-import type { ChatMessage, Conversation, KnowraDocument } from '../types';
+import type { ChatMessage, Conversation, KnowraDocument, User } from '../types';
 import { formatMessageTime, groupByRecency } from '../utils/format';
 import { usePreferences } from '../hooks/usePreferences';
 import { BrandMark } from './BrandMark';
@@ -35,6 +35,18 @@ import { copyRenderedMessage } from '../utils/copyResponse';
 import { readViewCache, writeViewCache } from '../utils/viewCache';
 
 const CHAT_PAGE_SIZE = 20;
+
+function userHasDocumentKey(user: User | null | undefined): boolean {
+  if (!user) return false;
+  if (typeof user.hasDocumentKey === 'boolean') return user.hasDocumentKey;
+  return user.hasOpenAIKey;
+}
+
+function documentKeyPrompt(provider?: string): string {
+  if (provider === 'google') return 'Add your Gemini API key in Settings → AI before uploading.';
+  if (provider === 'custom') return 'Add a custom base URL in Settings → AI before uploading.';
+  return 'Add your OpenAI API key in Settings → AI before uploading.';
+}
 
 function useBriefStatus() {
   const [status, setStatus] = useState('');
@@ -380,10 +392,11 @@ export function WorkspacePage() {
     if (!question.trim()) return;
     if (!user?.canChat) {
       setError(
-        user?.hasOpenAIKey
+        userHasDocumentKey(user)
           ? 'Finish chat setup in Settings → AI (provider key) before chatting.'
-          : 'Add your OpenAI API key in Settings → AI before chatting.',
-      );      return;
+          : documentKeyPrompt(user?.documentProvider).replace(' before uploading.', ' before chatting.'),
+      );
+      return;
     }
     if (readyCount === 0) {
       setError(
@@ -692,9 +705,14 @@ export function WorkspacePage() {
         <div className="notice-warn m-4 rounded-[var(--radius-control)] px-3 py-2.5 text-sm backdrop-blur-sm">
           {user?.activeOrg && user.activeOrg.role === 'member' ? (
             <>Your organization admin needs to finish AI setup before chat can search documents.</>
-          ) : !user?.hasOpenAIKey ? (
+          ) : !userHasDocumentKey(user) ? (
             <>
-              Add your OpenAI key in{' '}
+              {user?.documentProvider === 'google'
+                ? 'Add your Gemini key'
+                : user?.documentProvider === 'custom'
+                  ? 'Add a custom base URL'
+                  : 'Add your OpenAI key'}{' '}
+              in{' '}
               <Link
                 className="font-medium text-[var(--color-accent)] underline"
                 to="/settings#api-key"
@@ -712,7 +730,7 @@ export function WorkspacePage() {
               >
                 Settings → AI
               </Link>
-              {user.chatProvider && user.chatProvider !== 'openai'
+              {user?.chatProvider && user.chatProvider !== 'openai'
                 ? ` (add your ${
                     user.chatProvider === 'anthropic'
                       ? 'Claude'

@@ -19,6 +19,7 @@ import {
   LoaderCircle,
   MoreVertical,
   Pencil,
+  RotateCcw,
   Search,
   Trash2,
   Upload,
@@ -26,7 +27,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { api, ApiError } from '../services/api';
-import type { FolderPathSegment, KnowraDocument, KnowraFolder } from '../types';
+import type { FolderPathSegment, KnowraDocument, KnowraFolder, User } from '../types';
 import { DOCUMENT_ACCEPT, fileKindLabel, mimeFromFile } from '../utils/fileTypes';
 import { formatBytes, formatRelativeDate } from '../utils/format';
 import { useAuth } from '../hooks/useAuth';
@@ -39,6 +40,18 @@ import { FileActivity } from '../components/FileActivity';
 import { FilesGridSkeleton, FilesListSkeleton, FilesTableSkeleton } from '../components/Skeleton';
 import { describeProcessing, describeUpload, isActiveDocument, useActivityClock } from '../utils/fileActivity';
 import { readViewCache, writeViewCache } from '../utils/viewCache';
+
+function userHasDocumentKey(user: User | null | undefined): boolean {
+  if (!user) return false;
+  if (typeof user.hasDocumentKey === 'boolean') return user.hasDocumentKey;
+  return user.hasOpenAIKey;
+}
+
+function documentKeyPrompt(provider?: string): string {
+  if (provider === 'google') return 'Add your Gemini API key in Settings → AI before uploading.';
+  if (provider === 'custom') return 'Add a custom base URL in Settings → AI before uploading.';
+  return 'Add your OpenAI API key in Settings → AI before uploading.';
+}
 
 type FilesView = 'list' | 'grid';
 type SortKey = 'name' | 'modified' | 'size' | 'type';
@@ -407,8 +420,8 @@ export function FilesPage() {
   }
 
   async function onUpload(fileList: FileList | File[]) {
-    if (!user?.hasOpenAIKey) {
-      setError('Add your OpenAI API key in Settings → AI before uploading.');
+    if (!userHasDocumentKey(user)) {
+      setError(documentKeyPrompt(user?.documentProvider));
       return;
     }
 
@@ -426,8 +439,8 @@ export function FilesPage() {
   }
 
   async function onUploadDirectory(fileList: FileList | File[]) {
-    if (!user?.hasOpenAIKey) {
-      setError('Add your OpenAI API key in Settings → AI before uploading.');
+    if (!userHasDocumentKey(user)) {
+      setError(documentKeyPrompt(user?.documentProvider));
       return;
     }
 
@@ -489,6 +502,17 @@ export function FilesPage() {
   function requestDeleteFile(doc: KnowraDocument) {
     setOpenMenuId(null);
     setDeleteTarget({ kind: 'file', doc });
+  }
+
+  async function retryFile(doc: KnowraDocument) {
+    setOpenMenuId(null);
+    setError('');
+    try {
+      const res = await api.retryDocument(doc.id);
+      setDocuments((prev) => prev.map((item) => (item.id === doc.id ? res.document : item)));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not retry this file');
+    }
   }
 
   async function confirmDelete() {
@@ -803,6 +827,17 @@ export function FilesPage() {
               <ExternalLink className="icon-sm" aria-hidden />
               Open
             </button>
+            {doc.status === 'failed' ? (
+              <button
+                type="button"
+                role="menuitem"
+                className="file-action-item"
+                onClick={() => void retryFile(doc)}
+              >
+                <RotateCcw className="icon-sm" aria-hidden />
+                Retry
+              </button>
+            ) : null}
             <button
               type="button"
               role="menuitem"

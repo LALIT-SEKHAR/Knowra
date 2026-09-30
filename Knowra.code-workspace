@@ -5,6 +5,14 @@
 		},
 		{
 			"path": "../Knowra-api"
+		},
+		{
+			"name": "Todo",
+			"path": "../Todo"
+		},
+		{
+			"name": "Todo API",
+			"path": "../Todo-api"
 		}
 	],
 	"settings": {}
